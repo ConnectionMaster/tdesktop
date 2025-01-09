@@ -14,8 +14,6 @@ struct ToastActivation;
 namespace Platform {
 namespace Notifications {
 
-#ifndef __MINGW32__
-
 class Manager : public Window::Notifications::NativeManager {
 public:
 	Manager(Window::Notifications::System *system);
@@ -45,16 +43,15 @@ protected:
 	void onAfterNotificationActivated(
 		NotificationId id,
 		not_null<Window::SessionController*> window) override;
-	bool doSkipAudio() const override;
 	bool doSkipToast() const override;
-	bool doSkipFlashBounce() const override;
+	void doMaybePlaySound(Fn<void()> playSound) override;
+	void doMaybeFlashBounce(Fn<void()> flashBounce) override;
 
 private:
 	class Private;
 	const std::unique_ptr<Private> _private;
 
 };
-#endif // !__MINGW32__
 
 } // namespace Notifications
 } // namespace Platform

@@ -74,7 +74,19 @@ struct custom_is_fast_copy_type<Window::Notifications::ChangeType> : std::true_t
 
 } // namespace base
 
+namespace base::options {
+
+template <typename Type>
+class option;
+
+using toggle = option<bool>;
+
+} // namespace base::options
+
 namespace Window::Notifications {
+
+extern const char kOptionGNotification[];
+extern base::options::toggle OptionGNotification;
 
 class Manager;
 
@@ -221,19 +233,19 @@ public:
 			const ContextId&,
 			const ContextId&) = default;
 
-		[[nodiscard]] auto toTuple() const {
-			return std::make_tuple(
-				sessionId,
-				peerId.value,
-				topicRootId.bare);
+		[[nodiscard]] auto toAnyVector() const {
+			return std::vector<std::any>{
+				std::make_any<uint64>(sessionId),
+				std::make_any<uint64>(peerId.value),
+				std::make_any<int64>(topicRootId.bare),
+			};
 		}
 
-		template<typename T>
-		[[nodiscard]] static auto FromTuple(const T &tuple) {
+		[[nodiscard]] static auto FromAnyVector(const auto &vector) {
 			return ContextId{
-				std::get<0>(tuple),
-				PeerIdHelper(std::get<1>(tuple)),
-				std::get<2>(tuple),
+				std::any_cast<uint64>(vector[0]),
+				PeerIdHelper(std::any_cast<uint64>(vector[1])),
+				std::any_cast<int64>(vector[2]),
 			};
 		}
 	};
@@ -245,17 +257,18 @@ public:
 			const NotificationId&,
 			const NotificationId&) = default;
 
-		[[nodiscard]] auto toTuple() const {
-			return std::make_tuple(
-				contextId.toTuple(),
-				msgId.bare);
+		[[nodiscard]] auto toAnyVector() const {
+			return std::vector<std::any>{
+				std::make_any<std::vector<std::any>>(contextId.toAnyVector()),
+				std::make_any<int64>(msgId.bare),
+			};
 		}
 
-		template<typename T>
-		[[nodiscard]] static auto FromTuple(const T &tuple) {
+		[[nodiscard]] static auto FromAnyVector(const auto &vector) {
 			return NotificationId{
-				ContextId::FromTuple(std::get<0>(tuple)),
-				std::get<1>(tuple),
+				ContextId::FromAnyVector(
+					std::any_cast<std::vector<std::any>>(vector[0])),
+				std::any_cast<int64>(vector[1]),
 			};
 		}
 	};
@@ -304,6 +317,7 @@ public:
 		bool hideMessageText = false;
 		bool hideMarkAsRead = false;
 		bool hideReplyButton = false;
+		bool spoilerLoginCode = false;
 	};
 	[[nodiscard]] DisplayOptions getNotificationOptions(
 		HistoryItem *item,
@@ -325,14 +339,14 @@ public:
 
 	[[nodiscard]] virtual ManagerType type() const = 0;
 
-	[[nodiscard]] bool skipAudio() const {
-		return doSkipAudio();
-	}
 	[[nodiscard]] bool skipToast() const {
 		return doSkipToast();
 	}
-	[[nodiscard]] bool skipFlashBounce() const {
-		return doSkipFlashBounce();
+	void maybePlaySound(Fn<void()> playSound) {
+		doMaybePlaySound(std::move(playSound));
+	}
+	void maybeFlashBounce(Fn<void()> flashBounce) {
+		doMaybeFlashBounce(std::move(flashBounce));
 	}
 
 	virtual ~Manager() = default;
@@ -350,9 +364,9 @@ protected:
 	virtual void doClearFromTopic(not_null<Data::ForumTopic*> topic) = 0;
 	virtual void doClearFromHistory(not_null<History*> history) = 0;
 	virtual void doClearFromSession(not_null<Main::Session*> session) = 0;
-	virtual bool doSkipAudio() const = 0;
-	virtual bool doSkipToast() const = 0;
-	virtual bool doSkipFlashBounce() const = 0;
+	[[nodiscard]] virtual bool doSkipToast() const = 0;
+	virtual void doMaybePlaySound(Fn<void()> playSound) = 0;
+	virtual void doMaybeFlashBounce(Fn<void()> flashBounce) = 0;
 	[[nodiscard]] virtual bool forceHideDetails() const {
 		return false;
 	}
@@ -433,14 +447,14 @@ protected:
 	}
 	void doClearFromSession(not_null<Main::Session*> session) override {
 	}
-	bool doSkipAudio() const override {
-		return false;
-	}
 	bool doSkipToast() const override {
 		return false;
 	}
-	bool doSkipFlashBounce() const override {
-		return false;
+	void doMaybePlaySound(Fn<void()> playSound) override {
+		playSound();
+	}
+	void doMaybeFlashBounce(Fn<void()> flashBounce) override {
+		flashBounce();
 	}
 
 };

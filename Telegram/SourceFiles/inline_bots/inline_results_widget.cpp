@@ -17,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/scroll_area.h"
 #include "ui/image/image_prepare.h"
 #include "ui/cached_round_corners.h"
+#include "ui/ui_utility.h"
 #include "styles/style_chat_helpers.h"
 
 namespace InlineBots {
@@ -236,7 +237,11 @@ void Widget::startShowAnimation() {
 
 		_showAnimation = std::make_unique<Ui::PanelAnimation>(st::emojiPanAnimation, Ui::PanelAnimation::Origin::BottomLeft);
 		auto inner = rect().marginsRemoved(st::emojiPanMargins);
-		_showAnimation->setFinalImage(std::move(image), QRect(inner.topLeft() * cIntRetinaFactor(), inner.size() * cIntRetinaFactor()));
+		_showAnimation->setFinalImage(
+			std::move(image),
+			QRect(
+				inner.topLeft() * style::DevicePixelRatio(),
+				inner.size() * style::DevicePixelRatio()));
 		_showAnimation->setCornerMasks(Images::CornersMask(ImageRoundRadius::Small));
 		_showAnimation->start();
 	}
@@ -246,8 +251,10 @@ void Widget::startShowAnimation() {
 
 QImage Widget::grabForPanelAnimation() {
 	Ui::SendPendingMoveResizeEvents(this);
-	auto result = QImage(size() * cIntRetinaFactor(), QImage::Format_ARGB32_Premultiplied);
-	result.setDevicePixelRatio(cRetinaFactor());
+	auto result = QImage(
+		size() * style::DevicePixelRatio(),
+		QImage::Format_ARGB32_Premultiplied);
+	result.setDevicePixelRatio(style::DevicePixelRatio());
 	result.fill(Qt::transparent);
 	_inPanelGrab = true;
 	render(&result);
@@ -259,12 +266,8 @@ void Widget::setResultSelectedCallback(Fn<void(ResultSelected)> callback) {
 	_inner->setResultSelectedCallback(std::move(callback));
 }
 
-void Widget::setSendMenuType(Fn<SendMenu::Type()> &&callback) {
-	_inner->setSendMenuType(std::move(callback));
-}
-
-void Widget::setCurrentDialogsEntryState(Dialogs::EntryState state) {
-	_inner->setCurrentDialogsEntryState(state);
+void Widget::setSendMenuDetails(Fn<SendMenu::Details()> &&callback) {
+	_inner->setSendMenuDetails(std::move(callback));
 }
 
 void Widget::hideAnimated() {
@@ -285,7 +288,6 @@ void Widget::hideFinished() {
 	_a_show.stop();
 	_showAnimation.reset();
 	_cache = QPixmap();
-	_horizontal = false;
 	_hiding = false;
 
 	_scroll->scrollToY(0);
@@ -385,13 +387,16 @@ void Widget::inlineResultsDone(const MTPmessages_BotResults &result) {
 		auto entry = it->second.get();
 		entry->nextOffset = qs(d.vnext_offset().value_or_empty());
 		if (const auto switchPm = d.vswitch_pm()) {
-			switchPm->match([&](const MTPDinlineBotSwitchPM &data) {
-				entry->switchPmText = qs(data.vtext());
-				entry->switchPmStartToken = qs(data.vstart_param());
-			});
+			entry->switchPmText = qs(switchPm->data().vtext());
+			entry->switchPmStartToken = qs(switchPm->data().vstart_param());
+			entry->switchPmUrl = QByteArray();
+		} else if (const auto switchWebView = d.vswitch_webview()) {
+			entry->switchPmText = qs(switchWebView->data().vtext());
+			entry->switchPmStartToken = QString();
+			entry->switchPmUrl = switchWebView->data().vurl().v;
 		}
 
-		if (auto count = v.size()) {
+		if (const auto count = v.size()) {
 			entry->results.reserve(entry->results.size() + count);
 		}
 		auto added = 0;
