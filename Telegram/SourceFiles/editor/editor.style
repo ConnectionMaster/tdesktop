@@ -38,8 +38,6 @@ photoEditorTextButtonPadding: margins(22px, 0px, 22px, 0px);
 
 photoEditorButtonStyle: TextStyle(semiboldTextStyle) {
 	font: font(14px semibold);
-	linkFont: font(14px semibold);
-	linkFontOver: font(14px semibold underline);
 }
 photoEditorButtonTextTop: 15px;
 
@@ -59,9 +57,7 @@ photoEditorRotateButton: IconButton(defaultIconButton) {
 
 	rippleAreaPosition: point(4px, 4px);
 	rippleAreaSize: 40px;
-	ripple: RippleAnimation(defaultRippleAnimation) {
-		color: shadowFg;
-	}
+	ripple: universalRippleAnimation;
 }
 photoEditorFlipButton: IconButton(photoEditorRotateButton) {
 	icon: icon {{ "photo_editor/flip", photoEditorButtonIconFg }};

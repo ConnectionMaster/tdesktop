@@ -28,7 +28,12 @@ crl::time FramePosition(const Stream &stream) {
 		: (stream.decodedFrame->pts != AV_NOPTS_VALUE)
 		? stream.decodedFrame->pts
 		: stream.decodedFrame->pkt_dts;
-	return FFmpeg::PtsToTime(pts, stream.timeBase);
+	const auto result = FFmpeg::PtsToTime(pts, stream.timeBase);
+
+	// Sometimes the result here may be larger than the stream duration.
+	return (stream.duration == kDurationUnavailable)
+		? result
+		: std::min(result, stream.duration);
 }
 
 FFmpeg::AvErrorWrap ProcessPacket(Stream &stream, FFmpeg::Packet &&packet) {
@@ -285,10 +290,10 @@ QImage PrepareBlurredBackground(QSize outer, QImage frame) {
 	const auto bsize = frame.size();
 	const auto copyw = std::min(
 		bsize.width(),
-		outer.width() * bsize.height() / outer.height());
+		std::max(outer.width() * bsize.height() / outer.height(), 1));
 	const auto copyh = std::min(
 		bsize.height(),
-		outer.height() * bsize.width() / outer.width());
+		std::max(outer.height() * bsize.width() / outer.width(), 1));
 	auto copy = (bsize == QSize(copyw, copyh))
 		? std::move(frame)
 		: frame.copy(
