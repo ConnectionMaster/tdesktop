@@ -7,7 +7,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "settings/settings_codes.h"
 
-#include "platform/platform_specific.h"
 #include "ui/toast/toast.h"
 #include "mainwidget.h"
 #include "mainwindow.h"
@@ -28,7 +27,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/themes/window_theme_editor.h"
 #include "window/window_session_controller.h"
 #include "media/audio/media_audio_track.h"
-#include "settings/settings_common.h"
 #include "settings/settings_folders.h"
 #include "api/api_updates.h"
 #include "base/qt/qt_common_adapters.h"
@@ -117,19 +115,6 @@ auto GenerateCodes() {
 			}
 		});
 	});
-	codes.emplace(u"videoplayer"_q, [](SessionController *window) {
-		if (!window) {
-			return;
-		}
-		auto text = cUseExternalVideoPlayer()
-			? u"Use internal video player?"_q
-			: u"Use external video player?"_q;
-		Ui::show(Ui::MakeConfirmBox({ text, [=] {
-			cSetUseExternalVideoPlayer(!cUseExternalVideoPlayer());
-			window->session().saveSettingsDelayed();
-			Ui::hideLayer();
-		} }));
-	});
 	codes.emplace(u"endpoints"_q, [](SessionController *window) {
 		if (!Core::App().domain().started()) {
 			return;
@@ -180,26 +165,6 @@ auto GenerateCodes() {
 		Core::Application::RegisterUrlScheme();
 		Ui::Toast::Show("Forced custom scheme register.");
 	});
-	codes.emplace(u"installlauncher"_q, [](SessionController *window) {
-		Platform::InstallLauncher(true);
-		Ui::Toast::Show("Forced launcher installation.");
-	});
-
-#if defined Q_OS_WIN || defined Q_OS_MAC
-	codes.emplace(u"freetype"_q, [](SessionController *window) {
-		auto text = cUseFreeType()
-#ifdef Q_OS_WIN
-			? u"Switch font engine to GDI?"_q
-#else // Q_OS_WIN
-			? u"Switch font engine to Cocoa?"_q
-#endif // !Q_OS_WIN
-			: u"Switch font engine to FreeType?"_q;
-
-		Ui::show(Ui::MakeConfirmBox({ text, [] {
-			Core::App().switchFreeType();
-		} }));
-	});
-#endif // Q_OS_WIN || Q_OS_MAC
 
 	auto audioFilters = u"Audio files (*.wav *.mp3);;"_q + FileDialog::AllFilesFilter();
 	auto audioKeys = {
