@@ -21,10 +21,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <set>
 #include <filesystem>
 
-#if __has_include(<kurlmimedata.h>)
-#include <kurlmimedata.h>
-#endif
-
 #if __has_include(<ksandbox.h>)
 #include <ksandbox.h>
 #endif
@@ -38,18 +34,6 @@ inline bool in_range(Value &&value, From &&from, Till &&till) {
 	return (value >= from) && (value < till);
 }
 
-#if __has_include(<kurlmimedata.h>)
-inline QList<QUrl> GetMimeUrls(const QMimeData *data) {
-	if (!data->hasUrls()) {
-		return {};
-	}
-
-	return KUrlMimeData::urlsFromMimeData(
-		data,
-		KUrlMimeData::PreferLocalUrls);
-}
-#endif
-
 #if __has_include(<ksandbox.h>)
 inline QString IconName() {
 	static const auto Result = KSandbox::isFlatpak()
@@ -61,12 +45,9 @@ inline QString IconName() {
 
 inline bool CanReadDirectory(const QString &path) {
 #ifndef Q_OS_MAC // directory_iterator since 10.15
-	try {
-		std::filesystem::directory_iterator(path.toStdString());
-		return true;
-	} catch (...) {
-		return false;
-	}
+	std::error_code error;
+	std::filesystem::directory_iterator(path.toStdString(), error);
+	return !error;
 #else
 	Unexpected("Not implemented.");
 #endif
@@ -175,8 +156,3 @@ inline int ceilclamp(float64 value, int32 step, int32 lowest, int32 highest) {
 		lowest,
 		highest);
 }
-
-static int32 FullArcLength = 360 * 16;
-static int32 QuarterArcLength = (FullArcLength / 4);
-static int32 MinArcLength = (FullArcLength / 360);
-static int32 AlmostFullArcLength = (FullArcLength - MinArcLength);

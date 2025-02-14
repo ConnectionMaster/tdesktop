@@ -11,7 +11,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/timer.h"
 #include "base/object_ptr.h"
 #include "core/core_settings.h"
-#include "base/required.h"
 
 namespace Main {
 class Session;
@@ -34,9 +33,11 @@ class Controller;
 class SessionController;
 class TitleWidget;
 struct TermsLock;
+struct SeparateId;
 
 [[nodiscard]] const QImage &Logo();
 [[nodiscard]] const QImage &LogoNoMargin();
+void OverrideApplicationIcon(QImage image);
 [[nodiscard]] QIcon CreateIcon(
 	Main::Session *session = nullptr,
 	bool returnNullIfDefault = false);
@@ -47,15 +48,17 @@ struct CounterLayerArgs {
 	using required = base::required<T>;
 
 	required<int> size = 16;
+	double devicePixelRatio = 1.;
 	required<int> count = 1;
 	required<style::color> bg;
 	required<style::color> fg;
 };
 
+extern const char kOptionNewWindowsSizeAsFirst[];
+extern const char kOptionDisableTouchbar[];
+
 [[nodiscard]] QImage GenerateCounterLayer(CounterLayerArgs &&args);
 [[nodiscard]] QImage WithSmallCounter(QImage image, CounterLayerArgs &&args);
-
-extern const char kOptionShowChatNameInNewWindow[];
 
 class MainWindow : public Ui::RpWindow {
 public:
@@ -65,7 +68,7 @@ public:
 	[[nodiscard]] Window::Controller &controller() const {
 		return *_controller;
 	}
-	[[nodiscard]] PeerData *singlePeer() const;
+	[[nodiscard]] Window::SeparateId id() const;
 	[[nodiscard]] bool isPrimary() const;
 	[[nodiscard]] Main::Account &account() const;
 	[[nodiscard]] Window::SessionController *sessionController() const;
@@ -79,14 +82,13 @@ public:
 	[[nodiscard]] QRect desktopRect() const;
 	[[nodiscard]] Core::WindowPosition withScreenInPosition(
 		Core::WindowPosition position) const;
-	[[nodiscard]] static Core::WindowPosition SecondaryInitPosition();
 
 	void init();
 
 	void updateIsActive();
 
 	[[nodiscard]] bool isActive() const {
-		return _isActive;
+		return !isHidden() && _isActive;
 	}
 	[[nodiscard]] virtual bool isActiveForTrayMenu() {
 		updateIsActive();
@@ -97,8 +99,6 @@ public:
 		return _positionInited;
 	}
 	void positionUpdated();
-
-	void reActivateWindow();
 
 	void showRightColumn(object_ptr<TWidget> widget);
 	int maximalExtendBy() const;
@@ -119,9 +119,11 @@ public:
 
 	void launchDrag(std::unique_ptr<QMimeData> data, Fn<void()> &&callback);
 
-	rpl::producer<> leaveEvents() const;
+	[[nodiscard]] rpl::producer<> leaveEvents() const;
+	[[nodiscard]] rpl::producer<> imeCompositionStarts() const;
 
-	virtual void updateWindowIcon();
+	virtual void updateWindowIcon() = 0;
+	void updateTitle();
 
 	void clearWidgets();
 
@@ -131,13 +133,19 @@ public:
 	void recountGeometryConstraints();
 	virtual void updateControlsGeometry();
 
+	void firstShow();
 	bool minimizeToTray();
 	void updateGlobalMenu() {
 		updateGlobalMenuHook();
 	}
 
-	[[nodiscard]] virtual bool preventsQuit(Core::QuitReason reason) {
-		return false;
+	[[nodiscard]] QRect countInitialGeometry(
+		Core::WindowPosition position,
+		Core::WindowPosition initial,
+		QSize minSize) const;
+
+	[[nodiscard]] virtual rpl::producer<QPoint> globalForceClicks() {
+		return rpl::never<QPoint>();
 	}
 
 protected:
@@ -145,9 +153,11 @@ protected:
 
 	void savePosition(Qt::WindowState state = Qt::WindowActive);
 	void handleStateChanged(Qt::WindowState state);
-	void handleActiveChanged();
+	void handleActiveChanged(bool active);
 	void handleVisibleChanged(bool visible);
 
+	virtual void checkActivation() {
+	}
 	virtual void initHook() {
 	}
 
@@ -180,11 +190,8 @@ protected:
 		return false;
 	}
 
-	// This one is overriden in Windows for historical reasons.
-	virtual int32 screenNameChecksum(const QString &name) const;
-
+	void imeCompositionStartReceived();
 	void setPositionInited();
-	void updateUnreadCounter();
 
 	virtual QRect computeDesktopRect() const;
 
@@ -193,9 +200,10 @@ private:
 	void updateMinimumSize();
 	void updatePalette();
 
-	[[nodiscard]] Core::WindowPosition positionFromSettings() const;
+	[[nodiscard]] Core::WindowPosition initialPosition() const;
+	[[nodiscard]] Core::WindowPosition nextInitialChildPosition(
+		SeparateId childId);
 	[[nodiscard]] QRect countInitialGeometry(Core::WindowPosition position);
-	void initGeometry();
 
 	bool computeIsActive() const;
 
@@ -209,18 +217,30 @@ private:
 	object_ptr<Ui::RpWidget> _body;
 	object_ptr<TWidget> _rightColumn = { nullptr };
 
-	QIcon _icon;
-	bool _usingSupportIcon = false;
-
 	bool _isActive = false;
 
 	rpl::event_stream<> _leaveEvents;
+	rpl::event_stream<> _imeCompositionStartReceived;
 
 	bool _maximizedBeforeHide = false;
+
+	QPoint _lastMyChildCreatePosition;
+	int _lastChildIndex = 0;
 
 	mutable QRect _monitorRect;
 	mutable crl::time _monitorLastGot = 0;
 
 };
+
+[[nodiscard]] int32 DefaultScreenNameChecksum(const QString &name);
+
+[[nodiscard]] Core::WindowPosition PositionWithScreen(
+	Core::WindowPosition position,
+	const QScreen *chosen,
+	QSize minimal);
+[[nodiscard]] Core::WindowPosition PositionWithScreen(
+	Core::WindowPosition position,
+	not_null<const QWidget*> widget,
+	QSize minimal);
 
 } // namespace Window
