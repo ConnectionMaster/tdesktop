@@ -324,26 +324,52 @@ void Instance::destroyCall(not_null<Call*> call) {
 	}
 }
 
-void Instance::createCall(not_null<UserData*> user, Call::Type type, bool video) {
-	auto call = std::make_unique<Call>(_delegate.get(), user, type, video);
-	const auto raw = call.get();
+void Instance::createCall(
+		not_null<UserData*> user,
+		Call::Type type,
+		bool isVideo) {
+	struct Performer final {
+		explicit Performer(Fn<void(bool, bool, const Performer &)> callback)
+		: callback(std::move(callback)) {
+		}
+		Fn<void(bool, bool, const Performer &)> callback;
+	};
+	const auto performer = Performer([=](
+			bool video,
+			bool isConfirmed,
+			const Performer &repeater) {
+		const auto delegate = _delegate.get();
+		auto call = std::make_unique<Call>(delegate, user, type, video);
+		if (isConfirmed) {
+			call->applyUserConfirmation();
+		}
+		const auto raw = call.get();
 
-	user->session().account().sessionChanges(
-	) | rpl::start_with_next([=] {
-		destroyCall(raw);
-	}, raw->lifetime());
+		user->session().account().sessionChanges(
+		) | rpl::start_with_next([=] {
+			destroyCall(raw);
+		}, raw->lifetime());
 
-	if (_currentCall) {
-		_currentCallPanel->replaceCall(raw);
-		std::swap(_currentCall, call);
-		call->hangup();
-	} else {
-		_currentCallPanel = std::make_unique<Panel>(raw);
-		_currentCall = std::move(call);
-	}
-	_currentCallChanges.fire_copy(raw);
-	refreshServerConfig(&user->session());
-	refreshDhConfig();
+		if (_currentCall) {
+			_currentCallPanel->replaceCall(raw);
+			std::swap(_currentCall, call);
+			call->hangup();
+		} else {
+			_currentCallPanel = std::make_unique<Panel>(raw);
+			_currentCall = std::move(call);
+		}
+		if (raw->state() == Call::State::WaitingUserConfirmation) {
+			_currentCallPanel->startOutgoingRequests(
+			) | rpl::start_with_next([=](bool video) {
+				repeater.callback(video, true, repeater);
+			}, raw->lifetime());
+		} else {
+			refreshServerConfig(&user->session());
+			refreshDhConfig();
+		}
+		_currentCallChanges.fire_copy(raw);
+	});
+	performer.callback(isVideo, false, performer);
 }
 
 void Instance::destroyGroupCall(not_null<GroupCall*> call) {
@@ -496,20 +522,6 @@ void Instance::showInfoPanel(not_null<GroupCall*> call) {
 	}
 }
 
-void Instance::setCurrentAudioDevice(bool input, const QString &deviceId) {
-	if (input) {
-		Core::App().settings().setCallInputDeviceId(deviceId);
-	} else {
-		Core::App().settings().setCallOutputDeviceId(deviceId);
-	}
-	Core::App().saveSettingsDelayed();
-	if (const auto call = currentCall()) {
-		call->setCurrentAudioDevice(input, deviceId);
-	} else if (const auto group = currentGroupCall()) {
-		group->setCurrentAudioDevice(input, deviceId);
-	}
-}
-
 FnMut<void()> Instance::addAsyncWaiter() {
 	auto semaphore = std::make_unique<crl::semaphore>();
 	const auto raw = semaphore.get();
@@ -528,6 +540,11 @@ FnMut<void()> Instance::addAsyncWaiter() {
 			}
 		});
 	};
+}
+
+bool Instance::isSharingScreen() const {
+	return (_currentCall && _currentCall->isSharingScreen())
+		|| (_currentGroupCall && _currentGroupCall->isSharingScreen());
 }
 
 bool Instance::isQuitPrevent() {
@@ -558,6 +575,14 @@ void Instance::handleCallUpdate(
 			// May be a repeated phoneCallRequested update from getDifference.
 			return;
 		}
+		if (inCall()
+			&& _currentCall->type() == Call::Type::Outgoing
+			&& _currentCall->user()->id == session->userPeerId()
+			&& (user->id == _currentCall->user()->session().userPeerId())) {
+			// Ignore call from the same running app, other account.
+			return;
+		}
+
 		const auto &config = session->serverConfig();
 		if (inCall() || inGroupCall() || !user || user->isSelf()) {
 			const auto flags = phoneCall.is_video()
@@ -643,7 +668,8 @@ bool Instance::inCall() const {
 		return false;
 	}
 	const auto state = _currentCall->state();
-	return (state != Call::State::Busy);
+	return (state != Call::State::Busy)
+		&& (state != Call::State::WaitingUserConfirmation);
 }
 
 bool Instance::inGroupCall() const {
@@ -672,13 +698,24 @@ void Instance::destroyCurrentCall() {
 	}
 }
 
-bool Instance::hasActivePanel(not_null<Main::Session*> session) const {
+bool Instance::hasVisiblePanel(Main::Session *session) const {
 	if (inCall()) {
-		return (&_currentCall->user()->session() == session)
-			&& _currentCallPanel->isActive();
+		return _currentCallPanel->isVisible()
+			&& (!session || (&_currentCall->user()->session() == session));
 	} else if (inGroupCall()) {
-		return (&_currentGroupCall->peer()->session() == session)
-			&& _currentGroupCallPanel->isActive();
+		return _currentGroupCallPanel->isVisible()
+			&& (!session || (&_currentGroupCall->peer()->session() == session));
+	}
+	return false;
+}
+
+bool Instance::hasActivePanel(Main::Session *session) const {
+	if (inCall()) {
+		return _currentCallPanel->isActive()
+			&& (!session || (&_currentCall->user()->session() == session));
+	} else if (inGroupCall()) {
+		return _currentGroupCallPanel->isActive()
+			&& (!session || (&_currentGroupCall->peer()->session() == session));
 	}
 	return false;
 }
@@ -703,6 +740,17 @@ bool Instance::minimizeCurrentActiveCall() {
 		return true;
 	} else if (inGroupCall() && _currentGroupCallPanel->isActive()) {
 		_currentGroupCallPanel->minimize();
+		return true;
+	}
+	return false;
+}
+
+bool Instance::toggleFullScreenCurrentActiveCall() {
+	if (inCall() && _currentCallPanel->isActive()) {
+		_currentCallPanel->toggleFullScreen();
+		return true;
+	} else if (inGroupCall() && _currentGroupCallPanel->isActive()) {
+		_currentGroupCallPanel->toggleFullScreen();
 		return true;
 	}
 	return false;
@@ -784,7 +832,7 @@ std::shared_ptr<tgcalls::VideoCaptureInterface> Instance::getVideoCapture(
 		if (deviceId) {
 			result->switchToDevice(
 				(deviceId->isEmpty()
-					? Core::App().settings().callVideoInputDeviceId()
+					? Core::App().settings().cameraDeviceId()
 					: *deviceId).toStdString(),
 				isScreenCapture);
 		}
@@ -792,7 +840,7 @@ std::shared_ptr<tgcalls::VideoCaptureInterface> Instance::getVideoCapture(
 	}
 	const auto startDeviceId = (deviceId && !deviceId->isEmpty())
 		? *deviceId
-		: Core::App().settings().callVideoInputDeviceId();
+		: Core::App().settings().cameraDeviceId();
 	auto result = std::shared_ptr<tgcalls::VideoCaptureInterface>(
 		tgcalls::VideoCaptureInterface::Create(
 			tgcalls::StaticThreads::getThreads(),

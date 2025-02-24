@@ -81,6 +81,7 @@ void MainList::clear() {
 		recomputeFullListSize();
 	});
 	const auto notifier = unreadStateChangeNotifier(true);
+	_pinned.clear();
 	_all.clear();
 	_unreadState = UnreadState();
 	_cloudUnreadState = UnreadState();
@@ -193,6 +194,14 @@ UnreadState MainList::unreadState() const {
 		result.chatsMuted = result.chats;
 		result.marksMuted = result.marks;
 	}
+#ifdef Q_OS_WIN
+	[[maybe_unused]] volatile auto touch = 0
+		+ _unreadState.marks + _unreadState.marksMuted
+		+ _unreadState.messages + _unreadState.messagesMuted
+		+ _unreadState.chats + _unreadState.chatsMuted
+		+ _unreadState.reactions + _unreadState.reactionsMuted
+		+ _unreadState.mentions;
+#endif // Q_OS_WIN
 	return result;
 }
 
