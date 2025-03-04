@@ -26,6 +26,7 @@ Authorizations::Entry ParseEntry(const MTPDauthorization &data) {
 
 	result.hash = data.is_current() ? 0 : data.vhash().v;
 	result.incomplete = data.is_password_pending();
+	result.callsDisabled = data.is_call_requests_disabled();
 
 	const auto apiId = result.apiId = data.vapi_id().v;
 	const auto isTest = (apiId == TestApiId);
@@ -71,26 +72,9 @@ Authorizations::Entry ParseEntry(const MTPDauthorization &data) {
 		appName,
 		appVer.isEmpty() ? QString() : (' ' + appVer));
 	result.ip = qs(data.vip());
-	if (!result.hash) {
-		result.active = tr::lng_status_online(tr::now);
-	} else {
-		const auto now = QDateTime::currentDateTime();
-		const auto lastTime = base::unixtime::parse(result.activeTime);
-		const auto nowDate = now.date();
-		const auto lastDate = lastTime.date();
-		if (lastDate == nowDate) {
-			result.active = QLocale().toString(
-				lastTime.time(),
-				QLocale::ShortFormat);
-		} else if (lastDate.year() == nowDate.year()
-			&& lastDate.weekNumber() == nowDate.weekNumber()) {
-			result.active = langDayOfWeek(lastDate);
-		} else {
-			result.active = QLocale().toString(
-				lastDate,
-				QLocale::ShortFormat);
-		}
-	}
+	result.active = result.hash
+		? Authorizations::ActiveDateString(result.activeTime)
+		: tr::lng_status_online(tr::now);
 	result.location = country;
 
 	return result;
@@ -128,15 +112,15 @@ void Authorizations::reload() {
 	)).done([=](const MTPaccount_Authorizations &result) {
 		_requestId = 0;
 		_lastReceived = crl::now();
-		result.match([&](const MTPDaccount_authorizations &auths) {
-			_ttlDays = auths.vauthorization_ttl_days().v;
-			_list = (
-				auths.vauthorizations().v
-			) | ranges::views::transform([](const MTPAuthorization &d) {
-				return ParseEntry(d.c_authorization());
-			}) | ranges::to<List>;
-			_listChanges.fire({});
-		});
+		const auto &data = result.data();
+		_ttlDays = data.vauthorization_ttl_days().v;
+		_list = ranges::views::all(
+			data.vauthorizations().v
+		) | ranges::views::transform([](const MTPAuthorization &auth) {
+			return ParseEntry(auth.data());
+		}) | ranges::to<List>;
+		refreshCallsDisabledHereFromCloud();
+		_listChanges.fire({});
 	}).fail([=] {
 		_requestId = 0;
 	}).send();
@@ -144,6 +128,14 @@ void Authorizations::reload() {
 
 void Authorizations::cancelCurrentRequest() {
 	_api.request(base::take(_requestId)).cancel();
+}
+
+void Authorizations::refreshCallsDisabledHereFromCloud() {
+	const auto that = ranges::find(_list, 0, &Entry::hash);
+	if (that != end(_list)
+		&& !_toggleCallsDisabledRequests.contains(0)) {
+		_callsDisabledHere = that->callsDisabled;
+	}
 }
 
 void Authorizations::requestTerminate(
@@ -180,19 +172,21 @@ Authorizations::List Authorizations::list() const {
 	return _list;
 }
 
-auto Authorizations::listChanges() const
+auto Authorizations::listValue() const
 -> rpl::producer<Authorizations::List> {
 	return rpl::single(
 		list()
 	) | rpl::then(
-		_listChanges.events() | rpl::map([=] { return list(); }));
+		_listChanges.events() | rpl::map([=] { return list(); })
+	);
 }
 
-rpl::producer<int> Authorizations::totalChanges() const {
+rpl::producer<int> Authorizations::totalValue() const {
 	return rpl::single(
 		total()
 	) | rpl::then(
-		_listChanges.events() | rpl::map([=] { return total(); }));
+		_listChanges.events() | rpl::map([=] { return total(); })
+	);
 }
 
 void Authorizations::updateTTL(int days) {
@@ -223,7 +217,11 @@ void Authorizations::toggleCallsDisabled(uint64 hash, bool disabled) {
 		MTP_bool(disabled)
 	)).done([=] {
 		_toggleCallsDisabledRequests.remove(hash);
-	}).fail([=] {
+	}).fail([=](const MTP::Error &error) {
+		LOG(("API Error: toggle calls %1. Hash: %2. %3.")
+			.arg(disabled ? u"disabled"_q : u"enabled"_q)
+			.arg(hash)
+			.arg(error.type()));
 		_toggleCallsDisabledRequests.remove(hash);
 	}).send();
 	_toggleCallsDisabledRequests.emplace(hash, id);
@@ -242,6 +240,19 @@ rpl::producer<bool> Authorizations::callsDisabledHereValue() const {
 
 rpl::producer<bool> Authorizations::callsDisabledHereChanges() const {
 	return _callsDisabledHere.changes();
+}
+
+QString Authorizations::ActiveDateString(TimeId active) {
+	const auto now = QDateTime::currentDateTime();
+	const auto lastTime = base::unixtime::parse(active);
+	const auto nowDate = now.date();
+	const auto lastDate = lastTime.date();
+	return (lastDate == nowDate)
+		? QLocale().toString(lastTime.time(), QLocale::ShortFormat)
+		: (lastDate.year() == nowDate.year()
+			&& lastDate.weekNumber() == nowDate.weekNumber())
+		? langDayOfWeek(lastDate)
+		: QLocale().toString(lastDate, QLocale::ShortFormat);
 }
 
 int Authorizations::total() const {

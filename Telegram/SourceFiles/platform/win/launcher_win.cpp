@@ -9,8 +9,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "core/crash_reports.h"
 #include "core/update_checker.h"
-#include "base/platform/win/base_windows_h.h"
 
+#include <windows.h>
 #include <shellapi.h>
 #include <VersionHelpers.h>
 
@@ -66,9 +66,6 @@ bool Launcher::launchUpdater(UpdaterLaunch action) {
 	}
 	if (cStartInTray()) {
 		pushArgument(u"-startintray"_q);
-	}
-	if (cUseFreeType()) {
-		pushArgument(u"-freetype"_q);
 	}
 	if (customWorkingDir()) {
 		pushArgument(u"-workdir"_q);

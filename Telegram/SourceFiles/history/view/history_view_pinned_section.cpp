@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/history_view_pinned_section.h"
 
 #include "history/view/history_view_top_bar_widget.h"
+#include "history/view/history_view_translate_bar.h"
 #include "history/view/history_view_list_widget.h"
 #include "history/history.h"
 #include "history/history_item_components.h"
@@ -23,7 +24,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/text/format_values.h"
 #include "ui/text/text_utilities.h"
 #include "ui/ui_utility.h"
-#include "ui/toasts/common_toasts.h"
 #include "base/timer_rpl.h"
 #include "apiwrap.h"
 #include "window/window_adaptive.h"
@@ -46,6 +46,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "platform/platform_specific.h"
 #include "lang/lang_keys.h"
 #include "styles/style_chat.h"
+#include "styles/style_chat_helpers.h"
 #include "styles/style_window.h"
 #include "styles/style_info.h"
 #include "styles/style_boxes.h"
@@ -84,11 +85,16 @@ object_ptr<Window::SectionWidget> PinnedMemento::createWidget(
 	return result;
 }
 
+Data::ForumTopic *PinnedMemento::topicForRemoveRequests() const {
+	return _thread->asTopic();
+}
+
 PinnedWidget::PinnedWidget(
 	QWidget *parent,
 	not_null<Window::SessionController*> controller,
 	not_null<Data::Thread*> thread)
 : Window::SectionWidget(parent, controller, thread->peer())
+, WindowListDelegate(controller)
 , _thread(thread->migrateToOrMe())
 , _history(thread->owningHistory())
 , _migratedPeer(thread->asHistory()
@@ -96,6 +102,7 @@ PinnedWidget::PinnedWidget(
 	: nullptr)
 , _topBar(this, controller)
 , _topBarShadow(this)
+, _translateBar(std::make_unique<TranslateBar>(this, controller, _history))
 , _scroll(std::make_unique<Ui::ScrollArea>(
 	this,
 	controller->chatStyle()->value(lifetime(), st::historyScroll),
@@ -146,6 +153,7 @@ PinnedWidget::PinnedWidget(
 		clearSelected();
 	}, _topBar->lifetime());
 
+	_translateBar->raise();
 	_topBarShadow->raise();
 	controller->adaptive().value(
 	) | rpl::start_with_next([=] {
@@ -154,7 +162,7 @@ PinnedWidget::PinnedWidget(
 
 	_inner = _scroll->setOwnedWidget(object_ptr<ListWidget>(
 		this,
-		controller,
+		&controller->session(),
 		static_cast<ListDelegate*>(this)));
 	_scroll->move(0, _topBar->height());
 	_scroll->show();
@@ -164,6 +172,7 @@ PinnedWidget::PinnedWidget(
 	}, lifetime());
 
 	setupClearButton();
+	setupTranslateBar();
 }
 
 PinnedWidget::~PinnedWidget() = default;
@@ -189,6 +198,29 @@ void PinnedWidget::setupClearButton() {
 			Window::UnpinAllMessages(controller(), _thread);
 		}
 	});
+}
+
+void PinnedWidget::setupTranslateBar() {
+	controller()->adaptive().oneColumnValue(
+	) | rpl::start_with_next([=, raw = _translateBar.get()](bool one) {
+		raw->setShadowGeometryPostprocess([=](QRect geometry) {
+			if (!one) {
+				geometry.setLeft(geometry.left() + st::lineWidth);
+			}
+			return geometry;
+		});
+	}, _translateBar->lifetime());
+
+	_translateBarHeight = 0;
+	_translateBar->heightValue(
+	) | rpl::start_with_next([=](int height) {
+		if (const auto delta = height - _translateBarHeight) {
+			_translateBarHeight = height;
+			setGeometryWithTopMoved(geometry(), delta);
+		}
+	}, _translateBar->lifetime());
+
+	_translateBar->finishAnimating();
 }
 
 void PinnedWidget::cornerButtonsShowAtPosition(
@@ -231,7 +263,7 @@ void PinnedWidget::showAtPosition(
 		FullMsgId originId) {
 	_inner->showAtPosition(
 		position,
-		anim::type::normal,
+		{},
 		_cornerButtons.doneJumpFrom(position.fullId, originId));
 }
 
@@ -257,6 +289,7 @@ QPixmap PinnedWidget::grabForShowAnimation(const Window::SectionSlideParams &par
 	if (params.withTopBarShadow) _topBarShadow->hide();
 	auto result = Ui::GrabWidget(this);
 	if (params.withTopBarShadow) _topBarShadow->show();
+	_translateBar->hide();
 	return result;
 }
 
@@ -314,7 +347,7 @@ void PinnedWidget::restoreState(not_null<PinnedMemento*> memento) {
 				? FullMsgId(_history->peer->id, highlight)
 				: FullMsgId(_migratedPeer->id, -highlight)),
 			.date = TimeId(0),
-		}, anim::type::instant);
+		}, { Window::SectionShow::Way::Forward, anim::type::instant });
 	}
 }
 
@@ -366,8 +399,11 @@ void PinnedWidget::updateControlsGeometry() {
 	_clearButton->resizeToWidth(width());
 	_clearButton->move(0, bottom);
 	const auto controlsHeight = 0;
-	const auto scrollY = _topBar->height();
-	const auto scrollHeight = bottom - scrollY - controlsHeight;
+	auto top = _topBar->height();
+	_translateBar->move(0, top);
+	_translateBar->resizeToWidth(contentWidth);
+	top += _translateBarHeight;
+	const auto scrollHeight = bottom - top - controlsHeight;
 	const auto scrollSize = QSize(contentWidth, scrollHeight);
 	if (_scroll->size() != scrollSize) {
 		_skipScrollEvent = true;
@@ -375,7 +411,7 @@ void PinnedWidget::updateControlsGeometry() {
 		_inner->resizeToWidth(scrollSize.width(), _scroll->height());
 		_skipScrollEvent = false;
 	}
-	_scroll->move(0, scrollY);
+	_scroll->move(0, top);
 	if (!_scroll->isHidden()) {
 		if (newScrollTop) {
 			_scroll->scrollToY(*newScrollTop);
@@ -425,6 +461,7 @@ void PinnedWidget::showAnimatedHook(
 void PinnedWidget::showFinishedHook() {
 	_topBar->setAnimatingMode(false);
 	_inner->showFinished();
+	_translateBar->show();
 }
 
 bool PinnedWidget::floatPlayerHandleWheelEvent(QEvent *e) {
@@ -459,6 +496,9 @@ void PinnedWidget::listCancelRequest() {
 
 void PinnedWidget::listDeleteRequest() {
 	confirmDeleteSelected();
+}
+
+void PinnedWidget::listTryProcessKeyInput(not_null<QKeyEvent*> e) {
 }
 
 rpl::producer<Data::MessagesSlice> PinnedWidget::listSource(
@@ -558,7 +598,11 @@ void PinnedWidget::listUpdateDateLink(
 }
 
 bool PinnedWidget::listElementHideReply(not_null<const Element*> view) {
-	return (view->data()->replyToId() == _thread->topicRootId());
+	if (const auto reply = view->data()->Get<HistoryMessageReply>()) {
+		return !reply->fields().manualQuote
+			&& (reply->messageId() == _thread->topicRootId());
+	}
+	return false;
 }
 
 bool PinnedWidget::listElementShownUnread(not_null<const Element*> view) {
@@ -573,6 +617,15 @@ bool PinnedWidget::listIsGoodForAroundPosition(
 void PinnedWidget::listSendBotCommand(
 	const QString &command,
 	const FullMsgId &context) {
+}
+
+void PinnedWidget::listSearch(
+		const QString &query,
+		const FullMsgId &context) {
+	const auto inChat = _history->peer->isUser()
+		? Dialogs::Key()
+		: Dialogs::Key(_history);
+	controller()->searchMessages(query, inChat);
 }
 
 void PinnedWidget::listHandleViaClick(not_null<UserData*> bot) {
@@ -607,14 +660,14 @@ void PinnedWidget::listShowPremiumToast(not_null<DocumentData*> document) {
 void PinnedWidget::listOpenPhoto(
 		not_null<PhotoData*> photo,
 		FullMsgId context) {
-	controller()->openPhoto(photo, context, MsgId());
+	controller()->openPhoto(photo, { context });
 }
 
 void PinnedWidget::listOpenDocument(
 		not_null<DocumentData*> document,
 		FullMsgId context,
 		bool showInMediaView) {
-	controller()->openDocument(document, context, MsgId(), showInMediaView);
+	controller()->openDocument(document, showInMediaView, { context });
 }
 
 void PinnedWidget::listPaintEmpty(
@@ -624,6 +677,19 @@ void PinnedWidget::listPaintEmpty(
 
 QString PinnedWidget::listElementAuthorRank(not_null<const Element*> view) {
 	return {};
+}
+
+bool PinnedWidget::listElementHideTopicButton(
+		not_null<const Element*> view) {
+	return true;
+}
+
+History *PinnedWidget::listTranslateHistory() {
+	return _history;
+}
+
+void PinnedWidget::listAddTranslatedItems(
+	not_null<TranslateTracker*> tracker) {
 }
 
 void PinnedWidget::confirmDeleteSelected() {

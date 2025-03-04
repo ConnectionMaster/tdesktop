@@ -16,6 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mainwindow.h"
 #include "storage/localstorage.h"
 #include "ui/boxes/confirm_box.h"
+#include "ui/widgets/color_editor.h"
 #include "ui/widgets/scroll_area.h"
 #include "ui/widgets/shadow.h"
 #include "ui/widgets/buttons.h"
@@ -26,12 +27,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/image/image_prepare.h"
 #include "ui/painter.h"
 #include "ui/ui_utility.h"
+#include "boxes/abstract_box.h"
 #include "base/parse_helper.h"
 #include "base/zlib_help.h"
 #include "base/call_delayed.h"
 #include "core/file_utilities.h"
 #include "core/application.h"
-#include "boxes/edit_color_box.h"
 #include "lang/lang_keys.h"
 #include "styles/style_window.h"
 #include "styles/style_dialogs.h"
@@ -229,7 +230,9 @@ public:
 	void recreateRows();
 
 	~Inner() {
-		if (_context.box) _context.box->closeBox();
+		if (_context.colorEditor.box) {
+			_context.colorEditor.box->closeBox();
+		}
 	}
 
 protected:
@@ -669,7 +672,10 @@ Editor::Editor(
 , _select(this, st::defaultMultiSelect, tr::lng_country_ph())
 , _leftShadow(this)
 , _topShadow(this)
-, _save(this, tr::lng_theme_editor_save_button(tr::now).toUpper(), st::dialogsUpdateButton) {
+, _save(
+		this,
+		tr::lng_theme_editor_save_button(tr::now),
+		st::dialogsUpdateButton) {
 	const auto path = EditingPalettePath();
 
 	_inner = _scroll->setOwnedWidget(object_ptr<Inner>(this, path));

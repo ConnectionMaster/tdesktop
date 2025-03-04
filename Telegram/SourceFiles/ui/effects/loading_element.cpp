@@ -7,14 +7,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "ui/effects/loading_element.h"
 
-#include "ui/effects/glare.h"
-
 #include "base/object_ptr.h"
 #include "base/random.h"
 #include "styles/palette.h"
+#include "ui/effects/glare.h"
 #include "ui/painter.h"
+#include "ui/rect.h"
 #include "ui/rp_widget.h"
 #include "styles/style_basic.h"
+#include "styles/style_dialogs.h"
 #include "styles/style_widgets.h"
 
 namespace Ui {
@@ -63,9 +64,27 @@ void LoadingText::paint(QPainter &p, int width) {
 		h / 2);
 }
 
+[[nodiscard]] const style::PeerListItem &PeerListItemFromDialogRow(
+		rpl::lifetime &lifetime,
+		const style::DialogRow &st) {
+	using namespace style;
+	const auto item = lifetime.make_state<PeerListItem>(PeerListItem{
+		.height = st.height,
+		.photoPosition = QPoint(st.padding.left(), st.padding.top()),
+		.namePosition = QPoint(st.nameLeft, st.nameTop),
+		.nameStyle = st::semiboldTextStyle,
+		.statusPosition = QPoint(st.textLeft, st.textTop),
+		.photoSize = st.photoSize,
+	});
+	return *item;
+}
+
 class LoadingPeerListItem final : public LoadingElement {
 public:
 	LoadingPeerListItem(const style::PeerListItem &st) : _st(st) {
+	}
+	LoadingPeerListItem(const style::DialogRow &st)
+	: _st(PeerListItemFromDialogRow(_lifetime, st)) {
 	}
 
 	[[nodiscard]] int height() const override {
@@ -99,17 +118,22 @@ public:
 			h1 / 2,
 			h1 / 2);
 
-		const auto h2 = st::defaultTextStyle.font->ascent;
-		p.drawRoundedRect(
-			_st.statusPosition.x(),
-			_st.statusPosition.y() + offset,
-			kStatusWidth,
-			h2,
-			h2 / 2,
-			h2 / 2);
+		{
+			const auto h2 = st::defaultTextStyle.font->ascent;
+			const auto radius = h2 / 2;
+			const auto rect = QRect(
+				_st.statusPosition.x(),
+				_st.statusPosition.y() + offset,
+				kStatusWidth,
+				h2);
+			if (rect::bottom(rect) < height()) {
+				p.drawRoundedRect(rect, radius, radius);
+			}
+		}
 	}
 
 private:
+	rpl::lifetime _lifetime;
 	const style::PeerListItem &_st;
 
 };
@@ -208,6 +232,17 @@ object_ptr<Ui::RpWidget> CreateLoadingTextWidget(
 object_ptr<Ui::RpWidget> CreateLoadingPeerListItemWidget(
 		not_null<Ui::RpWidget*> parent,
 		const style::PeerListItem &st,
+		int lines) {
+	return CreateLoadingElementWidget<LoadingPeerListItem>(
+		parent,
+		lines,
+		rpl::single(false),
+		st);
+}
+
+object_ptr<Ui::RpWidget> CreateLoadingDialogRowWidget(
+		not_null<Ui::RpWidget*> parent,
+		const style::DialogRow &st,
 		int lines) {
 	return CreateLoadingElementWidget<LoadingPeerListItem>(
 		parent,

@@ -7,7 +7,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "ui/controls/userpic_button.h"
 
+#include "apiwrap.h"
+#include "api/api_user_privacy.h"
 #include "base/call_delayed.h"
+#include "boxes/edit_privacy_box.h"
+#include "boxes/peers/edit_peer_info_box.h" // EditPeerInfoBox::Available.
 #include "ui/effects/ripple_animation.h"
 #include "ui/empty_userpic.h"
 #include "data/data_photo.h"
@@ -21,17 +25,22 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history.h"
 #include "calls/calls_instance.h"
 #include "core/application.h"
+#include "ui/effects/premium_graphics.h"
 #include "ui/layers/generic_box.h"
 #include "ui/text/text_utilities.h"
 #include "ui/widgets/menu/menu_action.h"
 #include "ui/painter.h"
+#include "ui/ui_utility.h"
 #include "editor/photo_editor_common.h"
 #include "editor/photo_editor_layer_widget.h"
+#include "info/userpic/info_userpic_emoji_builder_common.h"
+#include "info/userpic/info_userpic_emoji_builder_menu_item.h"
 #include "media/streaming/media_streaming_instance.h"
 #include "media/streaming/media_streaming_player.h"
 #include "media/streaming/media_streaming_document.h"
 #include "settings/settings_calls.h" // Calls::AddCameraSubsection.
-#include "webrtc/webrtc_media_devices.h" // Webrtc::GetVideoInputList.
+#include "settings/settings_privacy_controllers.h"
+#include "webrtc/webrtc_environment.h"
 #include "webrtc/webrtc_video_track.h"
 #include "ui/widgets/popup_menu.h"
 #include "window/window_controller.h"
@@ -41,25 +50,32 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "apiwrap.h"
 #include "api/api_peer_photo.h"
 #include "styles/style_boxes.h"
+#include "styles/style_chat.h"
 #include "styles/style_menu_icons.h"
+#include "styles/style_premium.h"
+
+#include <QtGui/QClipboard>
+#include <QtGui/QGuiApplication>
 
 namespace Ui {
 namespace {
 
 [[nodiscard]] bool IsCameraAvailable() {
 	return (Core::App().calls().currentCall() == nullptr)
-		&& !Webrtc::GetVideoInputList().empty();
+		&& !Core::App().mediaDevices().defaultId(
+			Webrtc::DeviceType::Camera).isEmpty();
 }
 
 void CameraBox(
 		not_null<Ui::GenericBox*> box,
 		not_null<Window::Controller*> controller,
 		PeerData *peer,
+		bool forceForumShape,
 		Fn<void(QImage &&image)> &&doneCallback) {
 	using namespace Webrtc;
 
 	const auto track = Settings::Calls::AddCameraSubsection(
-		std::make_shared<Ui::BoxShow>(box),
+		box->uiShow(),
 		box->verticalLayout(),
 		false);
 	if (!track) {
@@ -79,12 +95,14 @@ void CameraBox(
 			box->closeBox();
 			done(std::move(image));
 		};
+		const auto useForumShape = forceForumShape
+			|| (peer && peer->isForum());
 		PrepareProfilePhoto(
 			box,
 			controller,
 			{
 				.confirm = tr::lng_profile_set_photo_button(tr::now),
-				.cropType = ((peer && peer->isForum())
+				.cropType = (useForumShape
 					? EditorData::CropType::RoundedRect
 					: EditorData::CropType::Ellipse),
 				.keepAspectRatio = true,
@@ -100,9 +118,9 @@ void CameraBox(
 
 template <typename Callback>
 QPixmap CreateSquarePixmap(int width, Callback &&paintCallback) {
-	auto size = QSize(width, width) * cIntRetinaFactor();
+	const auto size = QSize(width, width) * style::DevicePixelRatio();
 	auto image = QImage(size, QImage::Format_ARGB32_Premultiplied);
-	image.setDevicePixelRatio(cRetinaFactor());
+	image.setDevicePixelRatio(style::DevicePixelRatio());
 	image.fill(Qt::transparent);
 	{
 		Painter p(&image);
@@ -141,11 +159,13 @@ UserpicButton::UserpicButton(
 	QWidget *parent,
 	not_null<Window::Controller*> window,
 	Role role,
-	const style::UserpicButton &st)
+	const style::UserpicButton &st,
+	bool forceForumShape)
 : RippleButton(parent, st.changeButton.ripple)
 , _st(st)
 , _controller(window->sessionController())
 , _window(window)
+, _forceForumShape(forceForumShape)
 , _role(role) {
 	Expects(_role == Role::ChangePhoto || _role == Role::ChoosePhoto);
 
@@ -188,13 +208,8 @@ UserpicButton::UserpicButton(
 , _source(Source::PeerPhoto) {
 	Expects(_role != Role::OpenPhoto);
 
-	if (_source == Source::Custom) {
-		showCustom({});
-	} else {
-		processPeerPhoto();
-		setupPeerViewers();
-	}
-	_waiting = false;
+	processPeerPhoto();
+	setupPeerViewers();
 	prepare();
 }
 
@@ -231,6 +246,7 @@ void UserpicButton::requestSuggestAvailability() {
 bool UserpicButton::canSuggestPhoto(not_null<UserData*> user) const {
 	// Server allows suggesting photos only in non-empty chats.
 	return !user->isSelf()
+		&& !user->isBot()
 		&& (user->owner().history(user)->lastServerMessage() != nullptr);
 }
 
@@ -265,76 +281,153 @@ void UserpicButton::choosePhotoLocally() {
 			_chosenImages.fire({ std::move(image), type });
 		};
 	};
-	const auto chooseFile = [=](ChosenType type = ChosenType::Set) {
+	const auto editorData = [=](ChosenType type) {
+		const auto user = _peer ? _peer->asUser() : nullptr;
+		const auto name = (user && !user->firstName.isEmpty())
+			? user->firstName
+			: _peer
+			? _peer->name()
+			: QString();
+		const auto phrase = (type == ChosenType::Suggest)
+			? &tr::lng_profile_suggest_sure
+			: (user && EditPeerInfoBox::Available(user))
+			? nullptr
+			: (user && !user->isSelf())
+			? &tr::lng_profile_set_personal_sure
+			: nullptr;
+		return Editor::EditorData{
+			.about = (phrase
+				? (*phrase)(
+					tr::now,
+					lt_user,
+					Ui::Text::Bold(name),
+					Ui::Text::WithEntities)
+				: TextWithEntities()),
+			.confirm = ((type == ChosenType::Suggest)
+				? tr::lng_profile_suggest_button(tr::now)
+				: tr::lng_profile_set_photo_button(tr::now)),
+			.cropType = (useForumShape()
+				? Editor::EditorData::CropType::RoundedRect
+				: Editor::EditorData::CropType::Ellipse),
+			.keepAspectRatio = true,
+		};
+	};
+	const auto chooseFile = [=](ChosenType type) {
 		base::call_delayed(
 			_st.changeButton.ripple.hideDuration,
 			crl::guard(this, [=] {
-				using namespace Editor;
-				const auto user = _peer ? _peer->asUser() : nullptr;
-				const auto name = (user && !user->firstName.isEmpty())
-					? user->firstName
-					: _peer
-					? _peer->name()
-					: QString();
-				const auto phrase = (type == ChosenType::Suggest)
-					? &tr::lng_profile_suggest_sure
-					: (user && !user->isSelf())
-					? &tr::lng_profile_set_personal_sure
-					: nullptr;
 				PrepareProfilePhotoFromFile(
 					this,
 					_window,
-					{
-						.about = (phrase
-							? (*phrase)(
-								tr::now,
-								lt_user,
-								Ui::Text::Bold(name),
-								Ui::Text::WithEntities)
-							: TextWithEntities()),
-						.confirm = ((type == ChosenType::Suggest)
-							? tr::lng_profile_suggest_button(tr::now)
-							: tr::lng_profile_set_photo_button(tr::now)),
-						.cropType = ((_peer && _peer->isForum())
-							? EditorData::CropType::RoundedRect
-							: EditorData::CropType::Ellipse),
-						.keepAspectRatio = true,
-					},
+					editorData(type),
 					callback(type));
 			}));
+	};
+	const auto user = _peer ? _peer->asUser() : nullptr;
+	const auto addUserpicBuilder = [&](ChosenType type) {
+		if (!_controller) {
+			return;
+		}
+		const auto done = [=](UserpicBuilder::Result data) {
+			auto result = ChosenImage{ base::take(data.image), type };
+			result.markup.documentId = data.id;
+			result.markup.colors = base::take(data.colors);
+			_chosenImages.fire(std::move(result));
+		};
+		UserpicBuilder::AddEmojiBuilderAction(
+			_controller,
+			_menu,
+			_controller->session().api().peerPhoto().emojiListValue(user
+				? Api::PeerPhoto::EmojiListType::Profile
+				: Api::PeerPhoto::EmojiListType::Group),
+			done,
+			_peer ? _peer->isForum() : false);
+	};
+	const auto addFromClipboard = [=](ChosenType type, tr::phrase<> text) {
+		if (const auto data = QGuiApplication::clipboard()->mimeData()) {
+			if (data->hasImage()) {
+				auto openEditor = crl::guard(this, [=, this] {
+					Editor::PrepareProfilePhoto(
+						this,
+						_window,
+						editorData(type),
+						callback(type),
+						qvariant_cast<QImage>(data->imageData()));
+				});
+				_menu->addAction(
+					std::move(text)(tr::now),
+					std::move(openEditor),
+					&st::menuIconPhoto);
+			}
+		}
 	};
 	_menu = base::make_unique_q<Ui::PopupMenu>(
 		this,
 		st::popupMenuWithIcons);
-	const auto user = _peer ? _peer->asUser() : nullptr;
 	if (user && !user->isSelf()) {
 		_menu->addAction(
 			tr::lng_profile_set_photo_for(tr::now),
-			[=] { chooseFile(); },
+			[=] { chooseFile(ChosenType::Set); },
 			&st::menuIconPhotoSet);
+		addFromClipboard(
+			ChosenType::Set,
+			tr::lng_profile_set_photo_for_from_clipboard);
 		if (canSuggestPhoto(user)) {
 			_menu->addAction(
 				tr::lng_profile_suggest_photo(tr::now),
 				[=] { chooseFile(ChosenType::Suggest); },
 				&st::menuIconPhotoSuggest);
+			addFromClipboard(
+				ChosenType::Suggest,
+				tr::lng_profile_suggest_photo_from_clipboard);
 		}
+		addUserpicBuilder(ChosenType::Set);
 		if (hasPersonalPhotoLocally()) {
+			_menu->addSeparator(&st::expandedMenuSeparator);
 			_menu->addAction(makeResetToOriginalAction());
 		}
 	} else {
-		if (!IsCameraAvailable()) {
-			chooseFile();
-		} else {
+		const auto hasCamera = IsCameraAvailable();
+		if (hasCamera || _controller) {
 			_menu->addAction(tr::lng_attach_file(tr::now), [=] {
-				chooseFile();
+				chooseFile(ChosenType::Set);
 			}, &st::menuIconPhoto);
-			_menu->addAction(tr::lng_attach_camera(tr::now), [=] {
-				_window->show(Box(
-					CameraBox,
-					_window,
-					_peer,
-					callback(ChosenType::Set)));
-			}, &st::menuIconPhotoSet);
+			if (hasCamera) {
+				_menu->addAction(tr::lng_attach_camera(tr::now), [=] {
+					_window->show(Box(
+						CameraBox,
+						_window,
+						_peer,
+						_forceForumShape,
+						callback(ChosenType::Set)));
+				}, &st::menuIconPhotoSet);
+			}
+			addFromClipboard(
+				ChosenType::Set,
+				tr::lng_profile_photo_from_clipboard);
+			addUserpicBuilder(ChosenType::Set);
+		} else {
+			chooseFile(ChosenType::Set);
+		}
+		if (user && user->isSelf()) {
+			const auto key = Api::UserPrivacy::Key::ProfilePhoto;
+			const auto text = tr::lng_edit_privacy_profile_photo_public_set(
+				tr::now);
+			user->session().api().userPrivacy().reload(key);
+			_menu->addAction(std::move(text), [=] {
+				using namespace Api;
+				user->session().api().userPrivacy().value(
+					key
+				) | rpl::take(
+					1
+				) | rpl::start_with_next([=](const UserPrivacy::Rule &value) {
+					using namespace Settings;
+					_window->show(Box<EditPrivacyBox>(
+						_window->sessionController(),
+						std::make_unique<ProfilePhotoPrivacyController>(),
+						value));
+				}, _menu->lifetime());
+			}, &st::menuIconProfile);
 		}
 	}
 	_menu->popup(QCursor::pos());
@@ -383,7 +476,7 @@ void UserpicButton::openPeerPhoto() {
 		return;
 	}
 	const auto photo = _peer->owner().photo(id);
-	if (photo->date && _controller) {
+	if (photo->date() && _controller) {
 		_controller->openPhoto(photo, _peer);
 	}
 }
@@ -546,8 +639,7 @@ void UserpicButton::paintUserpicFrame(Painter &p, QPoint photoPosition) {
 		auto size = QSize{ _st.photoSize, _st.photoSize };
 		const auto ratio = style::DevicePixelRatio();
 		request.outer = request.resize = size * ratio;
-		const auto forum = _peer && _peer->isForum();
-		if (forum) {
+		if (useForumShape()) {
 			const auto radius = int(_st.photoSize
 				* Ui::ForumUserpicRadiusMultiplier());
 			if (_roundingCorners[0].width() != radius * ratio) {
@@ -680,14 +772,15 @@ void UserpicButton::handleStreamingUpdate(Media::Streaming::Update &&update) {
 
 	v::match(update.data, [&](Information &update) {
 		streamingReady(std::move(update));
-	}, [&](const PreloadedVideo &update) {
-	}, [&](const UpdateVideo &update) {
+	}, [](PreloadedVideo) {
+	}, [&](UpdateVideo) {
 		this->update();
-	}, [&](const PreloadedAudio &update) {
-	}, [&](const UpdateAudio &update) {
-	}, [&](const WaitingForData &update) {
-	}, [&](MutedByOther) {
-	}, [&](Finished) {
+	}, [](PreloadedAudio) {
+	}, [](UpdateAudio) {
+	}, [](WaitingForData) {
+	}, [](SpeedEstimate) {
+	}, [](MutedByOther) {
+	}, [](Finished) {
 	});
 }
 
@@ -712,7 +805,7 @@ void UserpicButton::updateVideo() {
 		return;
 	}
 	const auto photo = _peer->owner().photo(id);
-	if (!photo->date || !photo->videoCanBePlayed()) {
+	if (!photo->date() || !photo->videoCanBePlayed()) {
 		clearStreaming();
 		return;
 	} else if (_streamed && _streamedPhoto == photo) {
@@ -789,6 +882,10 @@ void UserpicButton::processNewPeerPhoto() {
 	}
 }
 
+bool UserpicButton::useForumShape() const {
+	return _forceForumShape || (_peer && _peer->isForum());
+}
+
 void UserpicButton::grabOldUserpic() {
 	auto photoRect = QRect(
 		countPhotoPosition(),
@@ -836,6 +933,11 @@ void UserpicButton::switchChangePhotoOverlay(
 			update();
 		}
 	}
+}
+
+void UserpicButton::forceForumShape(bool force) {
+	_forceForumShape = force;
+	prepare();
 }
 
 void UserpicButton::showSavedMessagesOnSelf(bool enabled) {
@@ -890,19 +992,21 @@ void UserpicButton::showCustom(QImage &&image) {
 	if (_userpicHasImage) {
 		auto size = QSize(_st.photoSize, _st.photoSize);
 		auto small = image.scaled(
-			size * cIntRetinaFactor(),
+			size * style::DevicePixelRatio(),
 			Qt::IgnoreAspectRatio,
 			Qt::SmoothTransformation);
-		const auto forum = _peer && _peer->isForum();
-		_userpic = Ui::PixmapFromImage(forum
-			? Images::Round(std::move(small), Images::Option::RoundLarge)
+		_userpic = Ui::PixmapFromImage(useForumShape()
+			? Images::Round(
+				std::move(small),
+				Images::CornersMask(_st.photoSize
+					* Ui::ForumUserpicRadiusMultiplier()))
 			: Images::Circle(std::move(small)));
 	} else {
 		_userpic = CreateSquarePixmap(_st.photoSize, [&](Painter &p) {
 			fillShape(p, _st.changeButton.textBg);
 		});
 	}
-	_userpic.setDevicePixelRatio(cRetinaFactor());
+	_userpic.setDevicePixelRatio(style::DevicePixelRatio());
 	_userpicUniqueKey = {};
 	_result = std::move(image);
 
@@ -945,7 +1049,7 @@ void UserpicButton::fillShape(QPainter &p, const style::color &color) const {
 	p.setPen(Qt::NoPen);
 	p.setBrush(color);
 	const auto size = _st.photoSize;
-	if (_peer && _peer->isForum()) {
+	if (useForumShape()) {
 		const auto radius = size * Ui::ForumUserpicRadiusMultiplier();
 		p.drawRoundedRect(0, 0, size, size, radius, radius);
 	} else {
@@ -968,7 +1072,28 @@ void UserpicButton::prepareUserpicPixmap() {
 	_userpic = CreateSquarePixmap(size, [&](Painter &p) {
 		if (_userpicHasImage) {
 			if (_showPeerUserpic) {
-				_peer->paintUserpic(p, _userpicView, 0, 0, size);
+				if (useForumShape()) {
+					const auto ratio = style::DevicePixelRatio();
+					if (const auto cloud = _peer->userpicCloudImage(_userpicView)) {
+						Ui::ValidateUserpicCache(
+							_userpicView,
+							cloud,
+							nullptr,
+							size * ratio,
+							true);
+						p.drawImage(QRect(0, 0, size, size), _userpicView.cached);
+					} else {
+						const auto empty = PeerData::GenerateUserpicImage(
+							_peer,
+							_userpicView,
+							size * ratio,
+							(size * ratio)
+								* Ui::ForumUserpicRadiusMultiplier());
+						p.drawImage(QRect(0, 0, size, size), empty);
+					}
+				} else {
+					_peer->paintUserpic(p, _userpicView, 0, 0, size);
+				}
 			} else if (_nonPersonalView) {
 				using Size = Data::PhotoSize;
 				if (const auto full = _nonPersonalView->image(Size::Large)) {
@@ -977,26 +1102,23 @@ void UserpicButton::prepareUserpicPixmap() {
 						QSize(size, size) * ratio,
 						Qt::IgnoreAspectRatio,
 						Qt::SmoothTransformation);
-					if (_peer->isForum()) {
-						image = Images::Round(
+					image = useForumShape()
+						? Images::Round(
 							std::move(image),
 							Images::CornersMask(size
-								* Ui::ForumUserpicRadiusMultiplier()));
-					} else {
-						image = Images::Circle(std::move(image));
-					}
+								* Ui::ForumUserpicRadiusMultiplier()))
+						: Images::Circle(std::move(image));
 					image.setDevicePixelRatio(style::DevicePixelRatio());
 					p.drawImage(0, 0, image);
 				}
 			} else {
 				const auto user = _peer->asUser();
 				auto empty = Ui::EmptyUserpic(
-					Ui::EmptyUserpic::UserpicColor(
-						Data::PeerColorIndex(_peer->id)),
+					Ui::EmptyUserpic::UserpicColor(_peer->colorIndex()),
 					((user && user->isInaccessible())
 						? Ui::EmptyUserpic::InaccessibleName()
 						: _peer->name()));
-				if (_peer->isForum()) {
+				if (useForumShape()) {
 					empty.paintRounded(
 						p,
 						0,

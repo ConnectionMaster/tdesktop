@@ -7,10 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "core/file_utilities.h"
 
-#include "boxes/abstract_box.h"
 #include "storage/localstorage.h"
 #include "storage/storage_account.h"
-#include "base/platform/base_platform_info.h"
 #include "base/platform/base_platform_file_utilities.h"
 #include "platform/platform_file_utilities.h"
 #include "core/application.h"
@@ -76,7 +74,7 @@ QString filedialogDefaultName(
 	QString base;
 	if (fileTime) {
 		const auto date = base::unixtime::parse(fileTime);
-		base = prefix + QLocale().toString(date, "_yyyy-MM-dd_HH-mm-ss");
+		base = prefix + date.toString("_yyyy-MM-dd_HH-mm-ss");
 	} else {
 		struct tm tm;
 		time_t t = time(NULL);
@@ -138,9 +136,9 @@ void OpenEmailLink(const QString &email) {
 	});
 }
 
-void OpenWith(const QString &filepath, QPoint menuPosition) {
+void OpenWith(const QString &filepath) {
 	InvokeQueued(QCoreApplication::instance(), [=] {
-		if (!Platform::File::UnsafeShowOpenWithDropdown(filepath, menuPosition)) {
+		if (!Platform::File::UnsafeShowOpenWithDropdown(filepath)) {
 			Ui::PreventDelayedActivation();
 			if (!Platform::File::UnsafeShowOpenWith(filepath)) {
 				Platform::File::UnsafeLaunch(filepath);
@@ -159,16 +157,16 @@ void Launch(const QString &filepath) {
 void ShowInFolder(const QString &filepath) {
 	crl::on_main([=] {
 		Ui::PreventDelayedActivation();
-		if (Platform::IsLinux()) {
-			// Hide mediaview to make other apps visible.
-			Core::App().hideMediaView();
-		}
 		base::Platform::ShowInFolder(filepath);
 	});
 }
 
 QString DefaultDownloadPathFolder(not_null<Main::Session*> session) {
+#if OS_MAC_STORE
+	return u"Telegram Lite"_q;
+#else // OS_MAC_STORE
 	return session->supportMode() ? u"Tsupport Desktop"_q : AppName.utf16();
+#endif // OS_MAC_STORE
 }
 
 QString DefaultDownloadPath(not_null<Main::Session*> session) {
@@ -334,7 +332,7 @@ QString ImagesOrAllFilter() {
 }
 
 QString PhotoVideoFilesFilter() {
-	return u"Image and Video Files (*.png *.jpg *.jpeg *.mp4 *.mov);;"_q
+	return u"Image and Video Files (*.png *.jpg *.jpeg *.mp4 *.mov *.m4v);;"_q
 		+ AllFilesFilter();
 }
 
@@ -371,6 +369,9 @@ bool GetDefault(
 		? parent->window()
 		: Core::App().getFileDialogParent();
 	Core::App().notifyFileDialogShown(true);
+	const auto guard = gsl::finally([] {
+		Core::App().notifyFileDialogShown(false);
+	});
 	if (type == Type::ReadFiles) {
 		files = QFileDialog::getOpenFileNames(resolvedParent, caption, startFile, filter);
 		QString path = files.isEmpty() ? QString() : QFileInfo(files.back()).absoluteDir().absolutePath();
@@ -386,7 +387,6 @@ bool GetDefault(
 	} else {
 		file = QFileDialog::getOpenFileName(resolvedParent, caption, startFile, filter);
 	}
-	Core::App().notifyFileDialogShown(false);
 
 	if (file.isEmpty()) {
 		files = QStringList();

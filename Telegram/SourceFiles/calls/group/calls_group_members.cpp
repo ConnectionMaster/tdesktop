@@ -21,16 +21,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_group_call.h"
 #include "data/data_peer_values.h" // Data::CanWriteValue.
 #include "data/data_session.h" // Data::Session::invitedToCallUsers.
-#include "settings/settings_common.h" // Settings::CreateButton.
+#include "settings/settings_common.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/scroll_area.h"
 #include "ui/widgets/popup_menu.h"
 #include "ui/effects/ripple_animation.h"
 #include "ui/effects/cross_line.h"
 #include "ui/painter.h"
+#include "ui/power_saving.h"
 #include "core/application.h" // Core::App().domain, .activeWindow.
 #include "main/main_domain.h" // Core::App().domain().activate.
 #include "main/main_session.h"
+#include "lang/lang_keys.h"
 #include "info/profile/info_profile_values.h" // Info::Profile::NameValue.
 #include "boxes/peers/edit_participants_box.h" // SubscribeToMigration.
 #include "boxes/peers/prepare_short_info_box.h" // PrepareShortInfo...
@@ -234,10 +236,10 @@ Members::Controller::Controller(
 	}, _lifetime);
 
 	rpl::combine(
-		rpl::single(anim::Disabled()) | rpl::then(anim::Disables()),
+		PowerSaving::OnValue(PowerSaving::kCalls),
 		Core::App().appDeactivatedValue()
-	) | rpl::start_with_next([=](bool animDisabled, bool deactivated) {
-		const auto hide = !(!animDisabled && !deactivated);
+	) | rpl::start_with_next([=](bool disabled, bool deactivated) {
+		const auto hide = disabled || deactivated;
 
 		if (!(hide && _soundingAnimationHideLastTime)) {
 			_soundingAnimationHideLastTime = hide ? crl::now() : 0;
@@ -1193,27 +1195,7 @@ base::unique_qptr<Ui::PopupMenu> Members::Controller::createRowContextMenu(
 	const auto addVolumeItem = (!muted || isMe(participantPeer));
 	const auto admin = IsGroupCallAdmin(_peer, participantPeer);
 	const auto session = &_peer->session();
-	const auto getCurrentWindow = [=]() -> Window::SessionController* {
-		if (const auto window = Core::App().separateWindowForPeer(
-				participantPeer)) {
-			return window->sessionController();
-		} else if (const auto window = Core::App().primaryWindow()) {
-			if (const auto controller = window->sessionController()) {
-				if (&controller->session() == session) {
-					return controller;
-				}
-			}
-		}
-		return nullptr;
-	};
-	const auto getWindow = [=] {
-		if (const auto current = getCurrentWindow()) {
-			return current;
-		} else if (&Core::App().domain().active() != &session->account()) {
-			Core::App().domain().activate(&session->account());
-		}
-		return getCurrentWindow();
-	};
+	const auto account = &session->account();
 
 	auto result = base::make_unique_q<Ui::PopupMenu>(
 		parent,
@@ -1224,7 +1206,7 @@ base::unique_qptr<Ui::PopupMenu> Members::Controller::createRowContextMenu(
 			: st::groupCallPopupMenu));
 	const auto weakMenu = Ui::MakeWeak(result.get());
 	const auto withActiveWindow = [=](auto callback) {
-		if (const auto window = getWindow()) {
+		if (const auto window = Core::App().activePrimaryWindow()) {
 			if (const auto menu = weakMenu.data()) {
 				menu->discardParentReActivate();
 
@@ -1233,8 +1215,13 @@ base::unique_qptr<Ui::PopupMenu> Members::Controller::createRowContextMenu(
 				// PopupMenu::hide activates back the group call panel :(
 				delete weakMenu;
 			}
-			callback(window);
-			window->widget()->activate();
+			window->invokeForSessionController(
+				account,
+				participantPeer,
+				[&](not_null<Window::SessionController*> newController) {
+					callback(newController);
+					newController->widget()->activate();
+				});
 		}
 	};
 	const auto showProfile = [=] {
@@ -1444,10 +1431,12 @@ void Members::Controller::addMuteActionsToContextMenu(
 		auto volumeItem = base::make_unique_q<MenuVolumeItem>(
 			menu->menu(),
 			st::groupCallPopupVolumeMenu,
+			st::groupCallMenuVolumeSlider,
 			otherParticipantStateValue,
 			_call->rtmp() ? _call->rtmpVolume() : row->volume(),
 			Group::kMaxVolume,
-			muted);
+			muted,
+			st::groupCallMenuVolumePadding);
 
 		mutesFromVolume = volumeItem->toggleMuteRequests();
 
@@ -1642,7 +1631,7 @@ void Members::setupAddMember(not_null<GroupCall*> call) {
 			return rpl::single(false) | rpl::type_erased();
 		}
 		return rpl::combine(
-			Data::CanWriteValue(peer, false),
+			Data::CanSendValue(peer, ChatRestriction::SendOther, false),
 			_call->joinAsValue()
 		) | rpl::map([=](bool can, not_null<PeerData*> joinAs) {
 			return can && joinAs->isSelf();
@@ -1685,7 +1674,7 @@ void Members::setupAddMember(not_null<GroupCall*> call) {
 			}
 			return;
 		}
-		auto addMember = Settings::CreateButton(
+		auto addMember = Settings::CreateButtonWithIcon(
 			_layout.get(),
 			tr::lng_group_call_invite(),
 			st::groupCallAddMember,
@@ -1866,11 +1855,11 @@ void Members::updateControlsGeometry() {
 void Members::setupFakeRoundCorners() {
 	const auto size = st::roundRadiusLarge;
 	const auto full = 3 * size;
-	const auto imagePartSize = size * cIntRetinaFactor();
-	const auto imageSize = full * cIntRetinaFactor();
+	const auto imagePartSize = size * style::DevicePixelRatio();
+	const auto imageSize = full * style::DevicePixelRatio();
 	const auto image = std::make_shared<QImage>(
 		QImage(imageSize, imageSize, QImage::Format_ARGB32_Premultiplied));
-	image->setDevicePixelRatio(cRetinaFactor());
+	image->setDevicePixelRatio(style::DevicePixelRatio());
 
 	const auto refreshImage = [=] {
 		image->fill(st::groupCallBg->c);
@@ -1977,16 +1966,8 @@ void Members::peerListSetDescription(
 	description.destroy();
 }
 
-void Members::peerListShowBox(
-	object_ptr<Ui::BoxContent> content,
-	Ui::LayerOptions options) {
-}
-
-void Members::peerListHideLayer() {
-}
-
-not_null<QWidget*> Members::peerListToastParent() {
-	Unexpected("...Members::peerListToastParent");
+std::shared_ptr<Main::SessionShow> Members::peerListUiShow() {
+	Unexpected("...Members::peerListUiShow");
 }
 
 } // namespace Calls::Group

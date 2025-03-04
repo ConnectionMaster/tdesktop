@@ -7,10 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "media/player/media_player_float.h"
 
-#include <rpl/merge.h>
 #include "data/data_document.h"
 #include "data/data_session.h"
-#include "data/data_media_types.h"
 #include "history/view/media/history_view_media.h"
 #include "history/history_item.h"
 #include "history/history.h"
@@ -261,8 +259,8 @@ void Float::paintEvent(QPaintEvent *e) {
 		p.setPen(pen);
 		p.setOpacity(_opacity * st::historyVideoMessageProgressOpacity);
 
-		auto from = QuarterArcLength;
-		auto len = -qRound(FullArcLength * progress);
+		auto from = arc::kQuarterLength;
+		auto len = -qRound(arc::kFullLength * progress);
 		auto stepInside = st::radialLine / 2;
 		{
 			PainterHighQualityEnabler hq(p);

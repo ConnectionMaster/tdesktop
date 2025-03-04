@@ -41,9 +41,9 @@ inline auto PreviewPath(int i) {
 
 const auto kSets = {
 	Set{ { 0,    0,         0, "Mac" },       PreviewPath(0) },
-	Set{ { 1, 1392, 8'184'590, "Android" },   PreviewPath(1) },
-	Set{ { 2, 1393, 5'413'219, "Twemoji" },   PreviewPath(2) },
-	Set{ { 3, 1394, 6'967'218, "JoyPixels" }, PreviewPath(3) },
+	Set{ { 1, 2290, 8'306'943, "Android" },   PreviewPath(1) },
+	Set{ { 2, 2291, 5'694'303, "Twemoji" },   PreviewPath(2) },
+	Set{ { 3, 2292, 7'261'223, "JoyPixels" }, PreviewPath(3) },
 };
 
 using Loading = MTP::DedicatedLoader::Progress;
@@ -247,7 +247,7 @@ void Row::paintPreview(QPainter &p) const {
 	const auto width = st::manageEmojiPreviewWidth;
 	const auto height = st::manageEmojiPreviewWidth;
 	auto &&preview = ranges::views::zip(_preview, ranges::views::ints(0, int(_preview.size())));
-	for (const auto [pixmap, index] : preview) {
+	for (const auto &[pixmap, index] : preview) {
 		const auto row = (index / 2);
 		const auto column = (index % 2);
 		const auto left = x + (column ? width - st::manageEmojiPreview : 0);
@@ -262,7 +262,7 @@ void Row::paintRadio(QPainter &p) {
 	}
 	const auto loading = _loading
 		? _loading->computeState()
-		: Ui::RadialState{ 0., 0, FullArcLength };
+		: Ui::RadialState{ 0., 0, arc::kFullLength };
 	const auto isToggledSet = v::is<Active>(_state.current());
 	const auto isActiveSet = isToggledSet || v::is<Loading>(_state.current());
 	const auto toggled = _toggled.value(isToggledSet ? 1. : 0.);
@@ -301,7 +301,7 @@ void Row::paintRadio(QPainter &p) {
 			_st->thickness,
 			pen.color(),
 			_st->bg);
-	} else if (loading.arcLength < FullArcLength) {
+	} else if (loading.arcLength < arc::kFullLength) {
 		p.drawArc(rect, loading.arcFrom, loading.arcLength);
 	} else {
 		p.drawEllipse(rect);
@@ -449,7 +449,7 @@ void Row::setupLabels(const Set &set) {
 }
 
 void Row::setupPreview(const Set &set) {
-	const auto size = st::manageEmojiPreview * cIntRetinaFactor();
+	const auto size = st::manageEmojiPreview * style::DevicePixelRatio();
 	const auto original = QImage(set.previewPath);
 	const auto full = original.height();
 	auto &&preview = ranges::views::zip(_preview, ranges::views::ints(0, int(_preview.size())));
@@ -457,7 +457,7 @@ void Row::setupPreview(const Set &set) {
 		pixmap = Ui::PixmapFromImage(original.copy(
 			{ full * index, 0, full, full }
 		).scaledToWidth(size, Qt::SmoothTransformation));
-		pixmap.setDevicePixelRatio(cRetinaFactor());
+		pixmap.setDevicePixelRatio(style::DevicePixelRatio());
 	}
 }
 

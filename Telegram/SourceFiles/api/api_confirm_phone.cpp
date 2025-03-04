@@ -31,7 +31,11 @@ void ConfirmPhone::resolve(
 	}
 	_sendRequestId = _api.request(MTPaccount_SendConfirmPhoneCode(
 		MTP_string(hash),
-		MTP_codeSettings(MTP_flags(0), MTP_vector<MTPbytes>())
+		MTP_codeSettings(
+			MTP_flags(0),
+			MTPVector<MTPbytes>(),
+			MTPstring(),
+			MTPBool())
 	)).done([=](const MTPauth_SentCode &result) {
 		_sendRequestId = 0;
 
@@ -54,8 +58,14 @@ void ConfirmPhone::resolve(
 				return bad("FlashCall");
 			}, [&](const MTPDauth_sentCodeTypeMissedCall &) {
 				return bad("MissedCall");
+			}, [&](const MTPDauth_sentCodeTypeFirebaseSms &) {
+				return bad("FirebaseSms");
 			}, [&](const MTPDauth_sentCodeTypeEmailCode &) {
 				return bad("EmailCode");
+			}, [&](const MTPDauth_sentCodeTypeSmsWord &) {
+				return bad("SmsWord");
+			}, [&](const MTPDauth_sentCodeTypeSmsPhrase &) {
+				return bad("SmsPhrase");
 			}, [&](const MTPDauth_sentCodeTypeSetUpEmailRequired &) {
 				return bad("SetUpEmailRequired");
 			});
@@ -87,9 +97,11 @@ void ConfirmPhone::resolve(
 			box->resendRequests(
 			) | rpl::start_with_next([=] {
 				_api.request(MTPauth_ResendCode(
+					MTP_flags(0),
 					MTP_string(phone),
-					MTP_string(phoneHash)
-				)).done([=](const MTPauth_SentCode &result) {
+					MTP_string(phoneHash),
+					MTPstring() // reason
+				)).done([=] {
 					if (boxWeak) {
 						boxWeak->callDone();
 					}
@@ -135,6 +147,9 @@ void ConfirmPhone::resolve(
 			}, box->lifetime());
 
 			controller->show(std::move(box), Ui::LayerOption::CloseOther);
+		}, [](const MTPDauth_sentCodeSuccess &) {
+			LOG(("API Error: Unexpected auth.sentCodeSuccess "
+				"(Api::ConfirmPhone)."));
 		});
 	}).fail([=](const MTP::Error &error) {
 		_sendRequestId = 0;

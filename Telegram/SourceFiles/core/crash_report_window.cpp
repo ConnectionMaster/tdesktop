@@ -9,7 +9,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "core/crash_reports.h"
 #include "core/application.h"
-#include "core/launcher.h"
 #include "core/sandbox.h"
 #include "core/update_checker.h"
 #include "core/ui_integration.h"
@@ -18,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/zlib_help.h"
 
 #include <QtWidgets/QFileDialog>
+#include <QtGui/QFontInfo>
 #include <QtGui/QScreen>
 #include <QtGui/QDesktopServices>
 #include <QtCore/QStandardPaths>
@@ -32,8 +32,6 @@ constexpr auto kDefaultProxyPort = 80;
 PreLaunchWindow *PreLaunchWindowInstance = nullptr;
 
 PreLaunchWindow::PreLaunchWindow(QString title) {
-	style::internal::StartFonts();
-
 	setWindowIcon(Window::CreateIcon());
 	setWindowFlags(Qt::Dialog | Qt::CustomizeWindowHint | Qt::WindowTitleHint | Qt::WindowCloseButtonHint);
 
@@ -43,7 +41,7 @@ PreLaunchWindow::PreLaunchWindow(QString title) {
 	p.setColor(QPalette::Window, QColor(255, 255, 255));
 	setPalette(p);
 
-	_size = QFontMetrics(font()).height();
+	_size = QFontInfo(font()).pixelSize();
 
 	int paddingVertical = (_size / 2);
 	int paddingHorizontal = _size;
@@ -99,7 +97,7 @@ PreLaunchWindow::~PreLaunchWindow() {
 
 PreLaunchLabel::PreLaunchLabel(QWidget *parent) : QLabel(parent) {
 	QFont labelFont(font());
-	labelFont.setFamily(style::internal::GetFontOverride(style::internal::FontSemibold));
+	labelFont.setWeight(QFont::DemiBold);
 	labelFont.setPixelSize(static_cast<PreLaunchWindow*>(parent)->basicSize());
 	setFont(labelFont);
 
@@ -118,7 +116,6 @@ void PreLaunchLabel::setText(const QString &text) {
 
 PreLaunchInput::PreLaunchInput(QWidget *parent, bool password) : QLineEdit(parent) {
 	QFont logFont(font());
-	logFont.setFamily(style::internal::GetFontOverride());
 	logFont.setPixelSize(static_cast<PreLaunchWindow*>(parent)->basicSize());
 	setFont(logFont);
 
@@ -139,7 +136,6 @@ PreLaunchInput::PreLaunchInput(QWidget *parent, bool password) : QLineEdit(paren
 
 PreLaunchLog::PreLaunchLog(QWidget *parent) : QTextEdit(parent) {
 	QFont logFont(font());
-	logFont.setFamily(style::internal::GetFontOverride());
 	logFont.setPixelSize(static_cast<PreLaunchWindow*>(parent)->basicSize());
 	setFont(logFont);
 
@@ -162,7 +158,7 @@ PreLaunchButton::PreLaunchButton(QWidget *parent, bool confirm) : QPushButton(pa
 	setObjectName(confirm ? "confirm" : "cancel");
 
 	QFont closeFont(font());
-	closeFont.setFamily(style::internal::GetFontOverride(style::internal::FontSemibold));
+	closeFont.setWeight(QFont::DemiBold);
 	closeFont.setPixelSize(static_cast<PreLaunchWindow*>(parent)->basicSize());
 	setFont(closeFont);
 
@@ -181,7 +177,7 @@ PreLaunchCheckbox::PreLaunchCheckbox(QWidget *parent) : QCheckBox(parent) {
 	setCheckState(Qt::Checked);
 
 	QFont closeFont(font());
-	closeFont.setFamily(style::internal::GetFontOverride(style::internal::FontSemibold));
+	closeFont.setWeight(QFont::DemiBold);
 	closeFont.setPixelSize(static_cast<PreLaunchWindow*>(parent)->basicSize());
 	setFont(closeFont);
 
@@ -249,7 +245,6 @@ LastCrashedWindow::UpdaterData::UpdaterData(QWidget *buttonParent)
 }
 
 LastCrashedWindow::LastCrashedWindow(
-	not_null<Core::Launcher*> launcher,
 	const QByteArray &crashdump,
 	Fn<void()> launch)
 : _dumpraw(crashdump)
@@ -425,7 +420,7 @@ LastCrashedWindow::LastCrashedWindow(
 	}
 
 	_pleaseSendReport.setText(u"Please send us a crash report."_q);
-	_yourReportName.setText(u"Your Report Tag: %1\nYour User Tag: %2"_q.arg(QString(_minidumpName).replace(".dmp", "")).arg(launcher->installationTag(), 0, 16));
+	_yourReportName.setText(u"Crash ID: %1"_q.arg(QString(_minidumpName).replace(".dmp", "")));
 	_yourReportName.setCursor(style::cur_text);
 	_yourReportName.setTextInteractionFlags(Qt::TextSelectableByMouse);
 

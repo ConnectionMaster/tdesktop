@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/section_memento.h"
 #include "history/view/history_view_corner_buttons.h"
 #include "history/view/history_view_list_widget.h"
+#include "history/history_view_swipe_data.h"
 #include "data/data_messages.h"
 #include "base/timer.h"
 
@@ -19,10 +20,11 @@ enum class SendMediaType;
 struct SendingAlbum;
 
 namespace SendMenu {
-enum class Type;
+struct Details;
 } // namespace SendMenu
 
 namespace Api {
+struct MessageToSend;
 struct SendOptions;
 struct SendAction;
 } // namespace Api
@@ -62,15 +64,17 @@ class Element;
 class TopBarWidget;
 class RepliesMemento;
 class ComposeControls;
+class ComposeSearch;
 class SendActionPainter;
 class StickerToast;
 class TopicReopenBar;
 class EmptyPainter;
 class PinnedTracker;
+class TranslateBar;
 
 class RepliesWidget final
 	: public Window::SectionWidget
-	, private ListDelegate
+	, private WindowListDelegate
 	, private CornerButtonsDelegate {
 public:
 	RepliesWidget(
@@ -125,6 +129,7 @@ public:
 	bool listScrollTo(int top, bool syntetic = true) override;
 	void listCancelRequest() override;
 	void listDeleteRequest() override;
+	void listTryProcessKeyInput(not_null<QKeyEvent*> e) override;
 	rpl::producer<Data::MessagesSlice> listSource(
 		Data::MessagePosition aroundId,
 		int limitBefore,
@@ -150,6 +155,9 @@ public:
 	void listSendBotCommand(
 		const QString &command,
 		const FullMsgId &context) override;
+	void listSearch(
+		const QString &query,
+		const FullMsgId &context) override;
 	void listHandleViaClick(not_null<UserData*> bot) override;
 	not_null<Ui::ChatTheme*> listChatTheme() override;
 	CopyRestrictionType listCopyRestrictionType(HistoryItem *item) override;
@@ -170,6 +178,14 @@ public:
 		Painter &p,
 		const Ui::ChatPaintContext &context) override;
 	QString listElementAuthorRank(not_null<const Element*> view) override;
+	bool listElementHideTopicButton(not_null<const Element*> view) override;
+	History *listTranslateHistory() override;
+	void listAddTranslatedItems(
+		not_null<TranslateTracker*> tracker) override;
+	Ui::ChatPaintContext listPreparePaintContext(
+		Ui::ChatPaintContextArgs &&args) override;
+	base::unique_qptr<Ui::PopupMenu> listFillSenderUserpicMenu(
+		PeerId userpicPeerId) override;
 
 	// CornerButtonsDelegate delegate.
 	void cornerButtonsShowAtPosition(
@@ -203,11 +219,15 @@ private:
 	void showAtEnd();
 	void showAtPosition(
 		Data::MessagePosition position,
-		FullMsgId originItemId = {},
-		anim::type animated = anim::type::normal);
+		FullMsgId originItemId = {});
+	void showAtPosition(
+		Data::MessagePosition position,
+		FullMsgId originItemId,
+		const Window::SectionShow &params);
 	void finishSending();
 
 	void setupComposeControls();
+	void setupSwipeReply();
 
 	void setupRoot();
 	void setupRootView();
@@ -217,9 +237,9 @@ private:
 	void setTopic(Data::ForumTopic *topic);
 	void setupDragArea();
 	void setupShortcuts();
+	void setupTranslateBar();
 
 	void searchInTopic();
-	void scrollDownAnimationFinish();
 	void updatePinnedVisibility();
 
 	void confirmDeleteSelected();
@@ -235,10 +255,11 @@ private:
 	void edit(
 		not_null<HistoryItem*> item,
 		Api::SendOptions options,
-		mtpRequestId *const saveEditMsgRequestId);
+		mtpRequestId *const saveEditMsgRequestId,
+		bool spoilered);
 	void chooseAttach(std::optional<bool> overrideSendImagesAsPhotos);
-	[[nodiscard]] SendMenu::Type sendMenuType() const;
-	[[nodiscard]] MsgId replyToId() const;
+	[[nodiscard]] SendMenu::Details sendMenuDetails() const;
+	[[nodiscard]] FullReplyTo replyTo() const;
 	[[nodiscard]] HistoryItem *lookupRoot() const;
 	[[nodiscard]] Data::ForumTopic *lookupTopic();
 	[[nodiscard]] bool computeAreComments() const;
@@ -247,7 +268,7 @@ private:
 	void pushReplyReturn(not_null<HistoryItem*> item);
 	void checkReplyReturns();
 	void recountChatWidth();
-	void replyToMessage(FullMsgId itemId);
+	void replyToMessage(FullReplyTo id);
 	void refreshTopBarActiveChat();
 	void refreshUnreadCountBadge(std::optional<int> count);
 
@@ -278,6 +299,9 @@ private:
 		std::optional<bool> overrideSendImagesAsPhotos,
 		const QString &insertTextOnCancel = QString());
 	bool showSendingFilesError(const Ui::PreparedList &list) const;
+	bool showSendingFilesError(
+		const Ui::PreparedList &list,
+		std::optional<bool> compress) const;
 	void sendingFilesConfirmed(
 		Ui::PreparedList &&list,
 		Ui::SendFilesWay way,
@@ -285,10 +309,9 @@ private:
 		Api::SendOptions options,
 		bool ctrlShiftEnter);
 
-	void sendExistingDocument(not_null<DocumentData*> document);
 	bool sendExistingDocument(
 		not_null<DocumentData*> document,
-		Api::SendOptions options,
+		Api::MessageToSend messageToSend,
 		std::optional<MsgId> localId);
 	void sendExistingPhoto(not_null<PhotoData*> photo);
 	bool sendExistingPhoto(
@@ -307,7 +330,6 @@ private:
 	void refreshJoinGroupButton();
 	[[nodiscard]] bool emptyShown() const;
 	[[nodiscard]] bool showSlowmodeError();
-	[[nodiscard]] std::optional<QString> writeRestriction() const;
 
 	const not_null<History*> _history;
 	MsgId _rootId = 0;
@@ -324,11 +346,15 @@ private:
 	object_ptr<TopBarWidget> _topBar;
 	object_ptr<Ui::PlainShadow> _topBarShadow;
 	std::unique_ptr<ComposeControls> _composeControls;
+	std::unique_ptr<ComposeSearch> _composeSearch;
 	std::unique_ptr<Ui::FlatButton> _joinGroup;
 	std::unique_ptr<TopicReopenBar> _topicReopenBar;
 	std::unique_ptr<EmptyPainter> _emptyPainter;
 	bool _skipScrollEvent = false;
 	bool _synteticScrollEvent = false;
+
+	std::unique_ptr<TranslateBar> _translateBar;
+	int _translateBarHeight = 0;
 
 	std::unique_ptr<PinnedTracker> _pinnedTracker;
 	std::unique_ptr<Ui::PinnedBar> _pinnedBar;
@@ -336,10 +362,12 @@ private:
 	int _pinnedBarHeight = 0;
 	FullMsgId _pinnedClickedId;
 	std::optional<FullMsgId> _minPinnedId;
+	HistoryItem *_shownPinnedItem = nullptr;
 
 	std::unique_ptr<Ui::PinnedBar> _rootView;
 	int _rootViewHeight = 0;
 	bool _rootViewInited = false;
+	bool _rootViewInitScheduled = false;
 	rpl::variable<bool> _rootVisible = false;
 
 	std::unique_ptr<Ui::ScrollArea> _scroll;
@@ -348,6 +376,8 @@ private:
 	FullMsgId _lastShownAt;
 	HistoryView::CornerButtons _cornerButtons;
 	rpl::lifetime _topicLifetime;
+
+	HistoryView::ChatPaintGestureHorizontalData _gestureHorizontal;
 
 	int _lastScrollTop = 0;
 	int _topicReopenBarHeight = 0;
@@ -359,17 +389,14 @@ private:
 
 };
 
-
 class RepliesMemento final : public Window::SectionMemento {
 public:
 	RepliesMemento(
 		not_null<History*> history,
 		MsgId rootId,
-		MsgId highlightId = 0)
-	: _history(history)
-	, _rootId(rootId)
-	, _highlightId(highlightId) {
-	}
+		MsgId highlightId = 0,
+		const TextWithEntities &highlightPart = {},
+		int highlightPartOffsetHint = 0);
 	explicit RepliesMemento(
 		not_null<HistoryItem*> commentsItem,
 		MsgId commentId = 0);
@@ -408,11 +435,19 @@ public:
 		return _replyReturns;
 	}
 
+	Data::ForumTopic *topicForRemoveRequests() const override;
+
 	[[nodiscard]] not_null<ListMemento*> list() {
 		return &_list;
 	}
-	[[nodiscard]] MsgId getHighlightId() const {
+	[[nodiscard]] MsgId highlightId() const {
 		return _highlightId;
+	}
+	[[nodiscard]] const TextWithEntities &highlightPart() const {
+		return _highlightPart;
+	}
+	[[nodiscard]] int highlightPartOffsetHint() const {
+		return _highlightPartOffsetHint;
 	}
 
 private:
@@ -420,6 +455,8 @@ private:
 
 	const not_null<History*> _history;
 	MsgId _rootId = 0;
+	const TextWithEntities _highlightPart;
+	const int _highlightPartOffsetHint = 0;
 	const MsgId _highlightId = 0;
 	ListMemento _list;
 	std::shared_ptr<Data::RepliesList> _replies;

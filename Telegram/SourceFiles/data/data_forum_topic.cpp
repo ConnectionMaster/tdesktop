@@ -143,7 +143,7 @@ QImage ForumTopicIconFrame(
 	return background;
 }
 
-QImage ForumTopicGeneralIconFrame(int size, const style::color &color) {
+QImage ForumTopicGeneralIconFrame(int size, const QColor &color) {
 	const auto ratio = style::DevicePixelRatio();
 	auto svg = QSvgRenderer(ForumTopicIconPath(u"general"_q));
 	auto result = QImage(
@@ -165,11 +165,68 @@ TextWithEntities ForumTopicIconWithTitle(
 		MsgId rootId,
 		DocumentId iconId,
 		const QString &title) {
+	const auto wrapped = st::wrap_rtl(title);
 	return (rootId == ForumTopic::kGeneralId)
-		? TextWithEntities{ u"# "_q + title }
+		? TextWithEntities{ u"# "_q + wrapped }
 		: iconId
-		? Data::SingleCustomEmoji(iconId).append(' ').append(title)
-		: TextWithEntities{ title };
+		? Data::SingleCustomEmoji(iconId).append(' ').append(wrapped)
+		: TextWithEntities{ wrapped };
+}
+
+QString ForumGeneralIconTitle() {
+	return QChar(0) + u"general"_q;
+}
+
+bool IsForumGeneralIconTitle(const QString &title) {
+	return !title.isEmpty() && !title[0].unicode();
+}
+
+int32 ForumGeneralIconColor(const QColor &color) {
+	return int32(uint32(color.red()) << 16
+		| uint32(color.green()) << 8
+		| uint32(color.blue())
+		| (uint32(color.alpha() == 255 ? 0 : color.alpha()) << 24));
+}
+
+QColor ParseForumGeneralIconColor(int32 value) {
+	const auto alpha = uint32(value) >> 24;
+	return QColor(
+		(value >> 16) & 0xFF,
+		(value >> 8) & 0xFF,
+		value & 0xFF,
+		alpha ? alpha : 255);
+}
+
+QString TopicIconEmojiEntity(TopicIconDescriptor descriptor) {
+	return IsForumGeneralIconTitle(descriptor.title)
+		? u"topic_general:"_q + QString::number(uint32(descriptor.colorId))
+		: (u"topic_icon:"_q
+			+ QString::number(uint32(descriptor.colorId))
+			+ ' '
+			+ ExtractNonEmojiLetter(descriptor.title));
+}
+
+TopicIconDescriptor ParseTopicIconEmojiEntity(QStringView entity) {
+	if (!entity.startsWith(u"topic_")) {
+		return {};
+	}
+	const auto general = u"topic_general:"_q;
+	const auto normal = u"topic_icon:"_q;
+	if (entity.startsWith(general)) {
+		return {
+			.title = ForumGeneralIconTitle(),
+			.colorId = int32(entity.mid(general.size()).toUInt()),
+		};
+	} else if (entity.startsWith(normal)) {
+		const auto parts = entity.mid(normal.size()).split(' ');
+		if (parts.size() == 2) {
+			return {
+				.title = parts[1].toString(),
+				.colorId = int32(parts[0].toUInt()),
+			};
+		}
+	}
+	return {};
 }
 
 ForumTopic::ForumTopic(not_null<Forum*> forum, MsgId rootId)
@@ -247,18 +304,6 @@ not_null<HistoryView::ListMemento*> ForumTopic::listMemento() {
 
 bool ForumTopic::my() const {
 	return (_flags & Flag::My);
-}
-
-bool ForumTopic::canWrite() const {
-	const auto channel = this->channel();
-	return channel->amIn()
-		&& !channel->amRestricted(ChatRestriction::SendMessages)
-		&& (!closed() || canToggleClosed());
-}
-
-bool ForumTopic::canSendPolls() const {
-	return canWrite()
-		&& !channel()->amRestricted(ChatRestriction::SendPolls);
 }
 
 bool ForumTopic::canEdit() const {
@@ -483,22 +528,29 @@ void ForumTopic::applyTopicTopMessage(MsgId topMessageId) {
 		const auto itemId = FullMsgId(channel()->id, topMessageId);
 		if (const auto item = owner().message(itemId)) {
 			setLastServerMessage(item);
-
-			// If we set a single album part, request the full album.
-			if (item->groupId() != MessageGroupId()) {
-				if (owner().groups().isGroupOfOne(item)
-					&& !item->toPreview({
-						.hideSender = true,
-						.hideCaption = true }).images.empty()
-					&& _requestedGroups.emplace(item->fullId()).second) {
-					owner().histories().requestGroupAround(item);
-				}
-			}
+			resolveChatListMessageGroup();
 		} else {
 			setLastServerMessage(nullptr);
 		}
 	} else {
 		setLastServerMessage(nullptr);
+	}
+}
+
+void ForumTopic::resolveChatListMessageGroup() {
+	if (!(_flags & Flag::ResolveChatListMessage)) {
+		return;
+	}
+	// If we set a single album part, request the full album.
+	const auto item = _lastServerMessage.value_or(nullptr);
+	if (item && item->groupId() != MessageGroupId()) {
+		if (owner().groups().isGroupOfOne(item)
+			&& !item->toPreview({
+				.hideSender = true,
+				.hideCaption = true }).images.empty()
+				&& _requestedGroups.emplace(item->fullId()).second) {
+			owner().histories().requestGroupAround(item);
+		}
 	}
 }
 
@@ -560,10 +612,11 @@ void ForumTopic::setChatListMessage(HistoryItem *item) {
 	_forum->listMessageChanged(was, item);
 }
 
-void ForumTopic::loadUserpic() {
+void ForumTopic::chatListPreloadData() {
 	if (_icon) {
 		[[maybe_unused]] const auto preload = _icon->ready();
 	}
+	allowChatListMessageResolve();
 }
 
 void ForumTopic::paintUserpic(
@@ -644,7 +697,7 @@ void ForumTopic::validateGeneralIcon(
 		: context.selected
 		? st::dialogsTextFgOver
 		: st::dialogsTextFg;
-	_defaultIcon = ForumTopicGeneralIconFrame(size, color);
+	_defaultIcon = ForumTopicGeneralIconFrame(size, color->c);
 	_flags = (_flags & ~mask) | flags;
 }
 
@@ -771,6 +824,7 @@ void ForumTopic::maybeSetLastMessage(not_null<HistoryItem*> item) {
 	Expects(item->topicRootId() == _rootId);
 
 	if (!_lastMessage
+		|| !(*_lastMessage)
 		|| ((*_lastMessage)->date() < item->date())
 		|| ((*_lastMessage)->date() == item->date()
 			&& (*_lastMessage)->id < item->id)) {
@@ -850,6 +904,14 @@ Dialogs::UnreadState ForumTopic::unreadStateFor(
 	result.reactionsMuted = muted ? result.reactions : 0;
 	result.known = known;
 	return result;
+}
+
+void ForumTopic::allowChatListMessageResolve() {
+	if (_flags & Flag::ResolveChatListMessage) {
+		return;
+	}
+	_flags |= Flag::ResolveChatListMessage;
+	resolveChatListMessageGroup();
 }
 
 HistoryItem *ForumTopic::chatListMessage() const {

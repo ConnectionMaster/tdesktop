@@ -14,22 +14,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_document.h"
 #include "data/data_document_media.h"
 #include "data/data_file_origin.h"
-#include "mainwidget.h"
 #include "main/main_account.h"
 #include "main/main_session.h"
 #include "media/audio/media_audio.h"
 #include "media/streaming/media_streaming_instance.h"
 #include "media/streaming/media_streaming_player.h"
 #include "ui/text/format_song_document_name.h"
-#include "window/window_controller.h"
-
-#include <ksandbox.h>
 
 namespace Media {
 namespace {
 
-[[nodiscard]] auto RepeatModeToLoopStatus(Media::Player::RepeatMode mode) {
-	using Mode = Media::Player::RepeatMode;
+[[nodiscard]] auto RepeatModeToLoopStatus(Media::RepeatMode mode) {
+	using Mode = Media::RepeatMode;
 	using Status = base::Platform::SystemMediaControls::LoopStatus;
 	switch (mode) {
 	case Mode::None: return Status::None;
@@ -45,20 +41,15 @@ bool SystemMediaControlsManager::Supported() {
 	return base::Platform::SystemMediaControls::Supported();
 }
 
-SystemMediaControlsManager::SystemMediaControlsManager(
-	not_null<Window::Controller*> controller)
+SystemMediaControlsManager::SystemMediaControlsManager()
 : _controls(std::make_unique<base::Platform::SystemMediaControls>()) {
 
-	using PlaybackStatus =
-		base::Platform::SystemMediaControls::PlaybackStatus;
+	using PlaybackStatus
+		= base::Platform::SystemMediaControls::PlaybackStatus;
 	using Command = base::Platform::SystemMediaControls::Command;
 
-	// Flatpak provides default permission to MPRIS, but not snap
-	if (!KSandbox::isFlatpak()) {
-		_controls->setServiceName(u"tdesktop"_q);
-	}
 	_controls->setApplicationName(AppName.utf16());
-	const auto inited = _controls->init(controller->widget());
+	const auto inited = _controls->init();
 	if (!inited) {
 		LOG(("SystemMediaControlsManager failed to init."));
 		return;
@@ -202,8 +193,8 @@ SystemMediaControlsManager::SystemMediaControlsManager(
 		_controls->setIsPreviousEnabled(mediaPlayer->previousAvailable(type));
 	}, _lifetime);
 
-	using Media::Player::RepeatMode;
-	using Media::Player::OrderMode;
+	using Media::RepeatMode;
+	using Media::OrderMode;
 
 	Core::App().settings().playerRepeatModeValue(
 	) | rpl::start_with_next([=](RepeatMode mode) {
@@ -227,7 +218,7 @@ SystemMediaControlsManager::SystemMediaControlsManager(
 		case Command::Next: mediaPlayer->next(type); break;
 		case Command::Previous: mediaPlayer->previous(type); break;
 		case Command::Stop: mediaPlayer->stop(type); break;
-		case Command::Raise: controller->widget()->showFromTray(); break;
+		case Command::Raise: Core::App().activate(); break;
 		case Command::LoopNone: {
 			Core::App().settings().setPlayerRepeatMode(RepeatMode::None);
 			Core::App().saveSettingsDelayed();
@@ -252,9 +243,7 @@ SystemMediaControlsManager::SystemMediaControlsManager(
 			break;
 		}
 		case Command::Quit: {
-			if (const auto main = controller->widget()->sessionContent()) {
-				main->closeBothPlayers();
-			}
+			Media::Player::instance()->stopAndClose();
 			break;
 		}
 		}
@@ -314,4 +303,4 @@ SystemMediaControlsManager::SystemMediaControlsManager(
 
 SystemMediaControlsManager::~SystemMediaControlsManager() = default;
 
-}  // namespace Media
+} // namespace Media

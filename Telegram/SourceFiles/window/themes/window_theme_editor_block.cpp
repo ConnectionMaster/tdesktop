@@ -7,13 +7,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "window/themes/window_theme_editor_block.h"
 
-#include "styles/style_window.h"
-#include "ui/effects/ripple_animation.h"
-#include "ui/widgets/shadow.h"
-#include "ui/painter.h"
-#include "boxes/edit_color_box.h"
-#include "lang/lang_keys.h"
 #include "base/call_delayed.h"
+#include "boxes/abstract_box.h"
+#include "lang/lang_keys.h"
+#include "ui/effects/ripple_animation.h"
+#include "ui/layers/generic_box.h"
+#include "ui/painter.h"
+#include "ui/widgets/color_editor.h"
+#include "ui/widgets/shadow.h"
+#include "styles/style_layers.h"
+#include "styles/style_window.h"
 
 namespace Window {
 namespace Theme {
@@ -131,9 +134,9 @@ void EditorBlock::Row::setValue(QColor value) {
 void EditorBlock::Row::fillValueString() {
 	auto addHex = [=](int code) {
 		if (code >= 0 && code < 10) {
-			_valueString.append('0' + code);
+			_valueString.append(QChar('0' + code));
 		} else if (code >= 10 && code < 16) {
-			_valueString.append('a' + (code - 10));
+			_valueString.append(QChar('a' + (code - 10)));
 		}
 	};
 	auto addCode = [=](int code) {
@@ -222,6 +225,10 @@ void EditorBlock::feed(const QString &name, QColor value, const QString &copyOfE
 
 bool EditorBlock::feedCopy(const QString &name, const QString &copyOf) {
 	if (auto row = findRow(copyOf)) {
+		if (copyOf == name) {
+			LOG(("Theme Warning: Skipping value '%1: %2' (the value refers to itself.)").arg(name, copyOf));
+			return true;
+		}
 		if (findRow(name)) {
 			// Remove the existing row and mark all its copies as unique keys.
 			LOG(("Theme Warning: Color value '%1' appears more than once in the color scheme.").arg(name));
@@ -229,6 +236,10 @@ bool EditorBlock::feedCopy(const QString &name, const QString &copyOf) {
 
 			// row was invalidated by removeRow() call.
 			row = findRow(copyOf);
+			// Should not happen, but still check.
+			if (!row) {
+				return true;
+			}
 		}
 		addRow(name, copyOf, row->value());
 	} else {
@@ -300,24 +311,49 @@ void EditorBlock::chooseRow() {
 }
 
 void EditorBlock::activateRow(const Row &row) {
-	if (_context->box) {
+	if (_context->colorEditor.editor) {
 		if (_type == Type::Existing) {
 			_context->possibleCopyOf = row.name();
-			_context->box->showColor(row.value());
+			_context->colorEditor.editor->showColor(row.value());
 		}
 	} else {
 		_editing = findRowIndex(&row);
-		if (auto box = Ui::show(Box<EditColorBox>(row.name(), EditColorBox::Mode::RGBA, row.value()))) {
-			box->setSaveCallback(crl::guard(this, [this](QColor value) {
-				saveEditing(value);
-			}));
-			box->setCancelCallback(crl::guard(this, [this] {
+		const auto name = row.name();
+		const auto value = row.value();
+		Ui::show(Box([=](not_null<Ui::GenericBox*> box) {
+			const auto editor = box->addRow(object_ptr<ColorEditor>(
+				box,
+				ColorEditor::Mode::RGBA,
+				value));
+			struct State {
+				rpl::lifetime cancelLifetime;
+			};
+			const auto state = editor->lifetime().make_state<State>();
+
+			const auto save = crl::guard(this, [=] {
+				state->cancelLifetime.destroy();
+				saveEditing(editor->color());
+			});
+			box->boxClosing(
+			) | rpl::start_with_next(crl::guard(this, [=] {
 				cancelEditing();
-			}));
-			_context->box = box;
-			_context->name = row.name();
+			}), state->cancelLifetime);
+			editor->submitRequests(
+			) | rpl::start_with_next(save, editor->lifetime());
+
+			box->setFocusCallback([=] {
+				editor->setInnerFocus();
+			});
+			box->addButton(tr::lng_settings_save(), save);
+			box->addButton(tr::lng_cancel(), [=] { box->closeBox(); });
+			box->setTitle(rpl::single(name));
+			box->setWidth(editor->width());
+
+			_context->colorEditor.box = box;
+			_context->colorEditor.editor = editor;
+			_context->name = name;
 			_context->updated.fire({});
-		}
+		}));
 	}
 }
 
@@ -531,7 +567,7 @@ void EditorBlock::mouseReleaseEvent(QMouseEvent *e) {
 	auto pressed = _pressed;
 	setPressed(-1);
 	if (pressed == _selected) {
-		if (_context->box) {
+		if (_context->colorEditor.box) {
 			chooseRow();
 		} else if (_selected >= 0) {
 			base::call_delayed(st::defaultRippleAnimation.hideDuration, this, [this, index = findRowIndex(&rowAtIndex(_selected))] {
@@ -605,7 +641,7 @@ void EditorBlock::cancelEditing() {
 		updateRow(_data[_editing]);
 	}
 	_editing = -1;
-	if (auto box = base::take(_context->box)) {
+	if (const auto box = base::take(_context->colorEditor.box)) {
 		box->closeBox();
 	}
 	_context->possibleCopyOf = QString();
@@ -782,7 +818,7 @@ EditorBlock::Row &EditorBlock::rowAtIndex(int index) {
 }
 
 int EditorBlock::findRowIndex(const QString &name) const {
-	return _indices.value(name, -1);;
+	return _indices.value(name, -1);
 }
 
 EditorBlock::Row *EditorBlock::findRow(const QString &name) {

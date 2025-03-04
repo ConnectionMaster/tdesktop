@@ -11,16 +11,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace Api {
 
-constexpr auto kDiscountDivider = 5.;
+constexpr auto kDiscountDivider = 1.;
 
-Data::SubscriptionOption CreateSubscriptionOption(
+Data::PremiumSubscriptionOption CreateSubscriptionOption(
 		int months,
 		int monthlyAmount,
 		int64 amount,
 		const QString &currency,
 		const QString &botUrl) {
 	const auto discount = [&] {
-		const auto percent = monthlyAmount * months / float64(amount) - 1.;
+		const auto percent = 1. - float64(amount) / (monthlyAmount * months);
 		return std::round(percent * 100. / kDiscountDivider)
 			* kDiscountDivider;
 	}();

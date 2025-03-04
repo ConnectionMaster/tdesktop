@@ -10,7 +10,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "dialogs/dialogs_entry.h"
 #include "dialogs/ui/dialogs_layout.h"
 #include "data/data_session.h"
-#include "mainwidget.h"
 
 namespace Dialogs {
 
@@ -33,7 +32,7 @@ not_null<Row*> List::addToEnd(Key key) {
 		key,
 		std::make_unique<Row>(key, _rows.size(), height())
 	).first->second.get();
-	result->recountHeight(_narrowRatio);
+	result->recountHeight(_narrowRatio, _filterId);
 	_rows.emplace_back(result);
 	if (_sortMode == SortMode::Date) {
 		adjustByDate(result);
@@ -113,7 +112,7 @@ bool List::updateHeight(Key key, float64 narrowRatio) {
 	const auto index = row->index();
 	auto top = row->top();
 	const auto was = row->height();
-	row->recountHeight(narrowRatio);
+	row->recountHeight(narrowRatio, _filterId);
 	if (row->height() == was) {
 		return false;
 	}
@@ -130,7 +129,7 @@ bool List::updateHeights(float64 narrowRatio) {
 	auto top = 0;
 	for (const auto &row : _rows) {
 		row->_top = top;
-		row->recountHeight(narrowRatio);
+		row->recountHeight(narrowRatio, _filterId);
 		top += row->height();
 	}
 	return (height() != was);

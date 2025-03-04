@@ -5,22 +5,22 @@
 # https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 add_library(td_scheme OBJECT)
-init_non_host_target(td_scheme ltcg)
+init_non_host_target(td_scheme)
 add_library(tdesktop::td_scheme ALIAS td_scheme)
 
 include(cmake/generate_scheme.cmake)
 
 set(scheme_files
-    ${res_loc}/tl/mtproto.tl
-    ${res_loc}/tl/api.tl
+    ${src_loc}/mtproto/scheme/api.tl
+    ${src_loc}/mtproto/scheme/mtproto.tl
 )
 
 generate_scheme(td_scheme ${src_loc}/codegen/scheme/codegen_scheme.py "${scheme_files}")
 
-nice_target_sources(td_scheme ${res_loc}
+nice_target_sources(td_scheme ${src_loc}/mtproto/scheme
 PRIVATE
-    tl/mtproto.tl
-    tl/api.tl
+    api.tl
+    mtproto.tl
 )
 
 target_include_directories(td_scheme
@@ -33,14 +33,6 @@ PUBLIC
     desktop-app::lib_base
     desktop-app::lib_tl
 )
-
-if (WIN32 AND NOT build_win64 AND DESKTOP_APP_SPECIAL_TARGET)
-    target_compile_options(td_scheme
-    PRIVATE
-        $<IF:$<CONFIG:Debug>,,/GL>
-    )
-    set_property(TARGET td_scheme APPEND_STRING PROPERTY STATIC_LIBRARY_OPTIONS "$<IF:$<CONFIG:Debug>,,/LTCG>")
-endif()
 
 if (CMAKE_SYSTEM_PROCESSOR STREQUAL "mips64")
     # Sometimes final linking may fail with error "relocation truncated to fit"

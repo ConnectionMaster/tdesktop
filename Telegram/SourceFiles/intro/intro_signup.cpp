@@ -7,13 +7,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "intro/intro_signup.h"
 
+#include "boxes/abstract_box.h"
 #include "intro/intro_widget.h"
 #include "core/file_utilities.h"
 #include "ui/boxes/confirm_box.h"
 #include "lang/lang_keys.h"
 #include "ui/controls/userpic_button.h"
 #include "ui/widgets/buttons.h"
-#include "ui/widgets/input_fields.h"
+#include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/labels.h"
 #include "styles/style_intro.h"
 #include "styles/style_boxes.h"
@@ -110,12 +111,7 @@ void SignupWidget::cancelled() {
 }
 
 void SignupWidget::nameSubmitDone(const MTPauth_Authorization &result) {
-	auto &d = result.c_auth_authorization();
-	if (d.vuser().type() != mtpc_user || !d.vuser().c_user().is_self()) { // wtf?
-		showError(rpl::single(Lang::Hard::ServerError()));
-		return;
-	}
-	finish(d.vuser(), _photo->takeResultImage());
+	finish(result);
 }
 
 void SignupWidget::nameSubmitFail(const MTP::Error &error) {
@@ -187,6 +183,7 @@ void SignupWidget::submit() {
 		_firstName = _first->getLastText().trimmed();
 		_lastName = _last->getLastText().trimmed();
 		_sentRequest = api().request(MTPauth_SignUp(
+			MTP_flags(0),
 			MTP_string(getData()->phone),
 			MTP_bytes(getData()->phoneHash),
 			MTP_string(_firstName),
